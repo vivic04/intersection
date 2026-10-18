@@ -93,13 +93,27 @@ function pickVoice() {
   if (!voices.length) loadVoices();
   return voices.find(v => v.name === S.settings.voice) || voices.find(v => /Samantha|Ava|Allison|Google US English|Daniel|Karen/i.test(v.name)) || voices[0];
 }
+// iOS: web audio is muted by the silent switch unless the audio session is "playback".
+function setAudioSession(type) { try { if (navigator.audioSession) navigator.audioSession.type = type; } catch (e) {} }
+let ttsActive = false, ttsUtt = null, ttsCheck = null;
 function say(text, btn) {
   if (!("speechSynthesis" in window)) { toast("This browser can't read aloud."); return; }
-  if (speechSynthesis.speaking) { speechSynthesis.cancel(); if (btn) btn.classList.remove("on"); return; }
+  const synth = window.speechSynthesis;
+  if (ttsActive) { ttsActive = false; synth.cancel(); $$(".speakbtn").forEach(b => b.classList.remove("on")); return; }
+  setAudioSession("playback");
+  synth.cancel();
   const u = new SpeechSynthesisUtterance(text);
+  ttsUtt = u; // keep a reference: iOS can drop utterances that get garbage-collected
   const v = pickVoice(); if (v) u.voice = v;
-  u.rate = S.settings.rate || 1; u.lang = v ? v.lang : "en-US";
-  speechSynthesis.speak(u);
+  u.lang = v ? v.lang : "en-US"; u.rate = S.settings.rate || 1; u.volume = 1;
+  let started = false;
+  u.onstart = () => { started = true; ttsActive = true; if (btn) btn.classList.add("on"); };
+  u.onend = u.onerror = () => { ttsActive = false; if (btn) btn.classList.remove("on"); };
+  ttsActive = true;
+  synth.speak(u);
+  try { synth.resume(); } catch (e) {}
+  clearTimeout(ttsCheck);
+  ttsCheck = setTimeout(() => { if (!started && !synth.speaking) { ttsActive = false; toast("No sound? Check your volume, or turn off Silent mode, then tap Listen again."); } }, 2500);
 }
 const speakIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>`;
 const listenBtn = (id, label = "Listen") => `<button class="speakbtn" data-say="${id}">${speakIcon}${label}</button>`;
@@ -112,6 +126,7 @@ async function startRec() {
   Rec.final = ""; Rec.interim = ""; Rec.secs = 0; Rec.chunks = [];
   if (Rec.url) { URL.revokeObjectURL(Rec.url); Rec.url = null; }
   try {
+    setAudioSession("play-and-record");
     Rec.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) {
     toast("Microphone blocked. Allow it in Settings, or type your answer instead.");
@@ -154,7 +169,7 @@ function stopRec() {
   Rec.secs = Math.max(1, Math.round((Date.now() - Rec.t0) / 1000));
   try { Rec.mr && Rec.mr.state !== "inactive" && Rec.mr.stop(); } catch (e) {}
   try { Rec.recog && Rec.recog.stop(); } catch (e) {}
-  setTimeout(() => { try { Rec.stream && Rec.stream.getTracks().forEach(t => t.stop()); } catch (e) {} }, 300);
+  setTimeout(() => { try { Rec.stream && Rec.stream.getTracks().forEach(t => t.stop()); } catch (e) {} setAudioSession("playback"); }, 300);
   return (Rec.final + " " + Rec.interim).replace(/\s+/g, " ").trim();
 }
 const fmtTime = s => Math.floor(s / 60) + ":" + pad(s % 60);
@@ -267,6 +282,7 @@ function finishSession() {
 function exitSession() {
   try { speechSynthesis.cancel(); } catch (e) {}
   if (Rec.on) stopRec();
+  ttsActive = false;
   if (sess && sess.finished && S.cur === sess) S.cur = null;
   sess = null; view = "today"; save(); render(); scrollTo(0, 0);
 }
