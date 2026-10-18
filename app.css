@@ -185,3 +185,6 @@ body.insession .tabs{display:none}
 .lesson .st{display:flex;flex-direction:column;align-items:flex-end;gap:5px}
 .minibar{display:block;width:56px;height:5px;border-radius:9px;background:var(--soft);overflow:hidden}
 .minibar span{display:block;height:100%;background:var(--k)}
+
+.treepanel{padding-bottom:10px}
+#tree{width:100%;height:230px;display:block}

@@ -1,6 +1,6 @@
 // Offline support: app shell is cached on install; everything else is cached as it's fetched.
-const CACHE = "intersection-v12";
-const SHELL = ["./", "index.html", "app.css", "app.js", "manifest.webmanifest",
+const CACHE = "intersection-v13";
+const SHELL = ["./", "index.html", "app.css", "app.js", "tree.js", "manifest.webmanifest",
   "content/core.js", "content/questions.js", "content/comms.js", "content/execution.js",
   "content/negotiation.js", "content/sales.js", "content/challenges.js",
   "icons/icon-180.png", "icons/icon-192.png", "icons/icon-512.png"];

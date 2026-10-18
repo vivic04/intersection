@@ -10,7 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "12";
+const APP_VERSION = "13";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -584,6 +584,8 @@ function todayView() {
     <div class="streak">${flame}<b class="mono">${streak()}</b></div>
   </header>
   <section class="hero"><div class="ring">${rings(150, false)}</div>${heroBody}</section>
+  <section class="panel treepanel"><canvas id="tree" aria-label="Your growth tree: one branch per skill, a leaf per technique learned, a blossom per technique mastered"></canvas>
+    <div class="row2"><span class="small muted">${Tree.caption()}</span><button class="link small" id="treeReplay" style="white-space:nowrap">↻ Replay</button></div></section>
   ${install}
   <section class="panel">
     <div class="row2"><h3>Your five skills</h3><span class="small muted">Weakest: <b style="color:var(--${minK})">${SK[minK].name}</b></span></div>
@@ -880,6 +882,8 @@ function bind() {
   $$("[data-tab]").forEach(b => b.onclick = () => { if (view === "session") return; view = b.dataset.tab; render(); scrollTo(0, 0); });
   $$("[data-say]").forEach(b => b.onclick = () => playClip(sayClips[b.dataset.say], sayTexts[b.dataset.say], b));
   if (view === "today") {
+    const tc = $("#tree"); if (tc) Tree.mount(tc, false);
+    const tr = $("#treeReplay"); if (tr) tr.onclick = () => Tree.mount($("#tree"), true);
     const st = $("[data-start]"); if (st) st.onclick = () => startSession(S.cur && !S.cur.finished && S.cur.date === today() ? S.cur.kind : "daily");
     const bo = $("[data-bonus]"); if (bo) bo.onclick = () => startSession("bonus");
     $$("[data-lib]").forEach(b => b.onclick = () => { libSkill = b.dataset.lib; view = "library"; render(); scrollTo(0, 0); });
