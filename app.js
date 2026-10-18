@@ -156,13 +156,27 @@ async function startRec() {
         const el = $("#liveText"); if (el) el.textContent = (Rec.final + interim).trim() || "Listening…";
       };
       r.onerror = () => {};
-      r.onend = () => { if (Rec.on && Rec.recog === r) { try { r.start(); } catch (e) {} } };
+      // iOS ends recognition often; restart gently, never in a tight loop
+      r.onend = () => {
+        if (!Rec.on || Rec.recog !== r) return;
+        const now = Date.now();
+        if (Rec.restarts >= 6 || now - (Rec.lastRestart || 0) < 1500) return;
+        Rec.restarts++; Rec.lastRestart = now;
+        setTimeout(() => { if (Rec.on && Rec.recog === r) { try { r.start(); } catch (e) {} } }, 300);
+      };
       r.start();
     } catch (e) { Rec.recog = null; }
   }
-  Rec.on = true; Rec.t0 = Date.now();
+  Rec.on = true; Rec.t0 = Date.now(); Rec.restarts = 0;
+  clearTimeout(Rec.cap); Rec.cap = setTimeout(() => { if (Rec.on) finishRecording(); }, 180000);
   Rec.timer = setInterval(() => { Rec.secs = Math.round((Date.now() - Rec.t0) / 1000); const t = $("#recTime"); if (t) t.textContent = fmtTime(Rec.secs); }, 250);
   return true;
+}
+function finishRecording() {
+  clearTimeout(Rec.cap);
+  const text = stopRec();
+  if (sess) { sess.secs = Rec.secs; sess.transcript = text; save(); }
+  if (view === "session") render();
 }
 function stopRec() {
   Rec.on = false; clearInterval(Rec.timer);
@@ -530,6 +544,7 @@ function recordStep() {
     </div>
     <div class="transcript" id="liveText">${esc(sess.transcript) || (SR && S.settings.transcript ? "Your words will appear here as you speak." : "Live transcript is off or not supported here. You can type what you said on the next screen.")}</div>
     <audio id="playback" controls ${Rec.url ? `src="${Rec.url}"` : "hidden"}></audio>
+    <button class="btn wide" id="stopRec" style="background:var(--rec);color:#fff" ${Rec.on ? "" : "hidden"}>■ Stop recording</button>
     <div class="btnrow"><button class="btn" data-recdone ${Rec.on ? "disabled" : ""}>${sess.secs ? "Grade it →" : "Skip recording, type instead →"}</button></div>`;
 }
 function gradeStep() {
@@ -649,16 +664,17 @@ function bindSession() {
   };
   const sk = $("[data-skipdrill]"); if (sk) sk.onclick = () => { sess.draft = ""; sess.score = 0; sess.gradedBy = "self"; sess.step++; advance(); };
   const rb = $("#recBtn"); if (rb) rb.onclick = async () => {
+    if (Rec.busy) return;
     if (!Rec.on) {
+      Rec.busy = true;
       try { speechSynthesis.cancel(); } catch (e) {}
-      const ok = await startRec(); if (!ok) return;
-      rb.classList.add("on"); $("#recHint").textContent = "Recording… tap to stop"; $("#liveText").textContent = SR && S.settings.transcript ? "Listening…" : "Recording. Transcript is off.";
+      const ok = await startRec(); Rec.busy = false; if (!ok) return;
+      rb.classList.add("on"); $("#recHint").textContent = "Recording… tap the button or Stop to finish"; $("#liveText").textContent = SR && S.settings.transcript ? "Listening…" : "Recording. Transcript is off.";
       const nb = $("[data-recdone]"); if (nb) nb.disabled = true;
-    } else {
-      const text = stopRec(); sess.secs = Rec.secs; sess.transcript = text; save();
-      setTimeout(render, 450);
-    }
+      const st = $("#stopRec"); if (st) st.hidden = false;
+    } else finishRecording();
   };
+  const sr2 = $("#stopRec"); if (sr2) sr2.onclick = () => { if (Rec.on) finishRecording(); };
   const rd = $("[data-recdone]"); if (rd) rd.onclick = () => { if (sess.secs) award(sks, 10); advance(); };
   const ai = $("#aiGrade"); if (ai) ai.onclick = async () => {
     const answer = ($("#ans") ? $("#ans").value : sess.draft).trim() || sess.draft;
