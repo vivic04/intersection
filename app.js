@@ -10,7 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "13";
+const APP_VERSION = "14";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -512,9 +512,10 @@ function finishSession() {
     if (it.redo) { S.lastMain = "redo"; S.redoRun = (S.redoRun || 0) + 1; }
     else { S.lastMain = "new"; S.redoRun = 0; }
   }
+  if (sess.kind !== "practice" && !it.redo && !it.mastery && QUEUE[S.pos] && QUEUE[S.pos].id === it.id && QUEUE[S.pos].type === it.type) sess.advanced = true;
   if (sess.kind !== "practice" && !it.redo && !it.mastery && QUEUE[S.pos] && QUEUE[S.pos].id === it.id && QUEUE[S.pos].type === it.type) S.pos++;
   S.log[d] = (S.log[d] || 0) + 1;
-  S.history.push({ d, type: it.type, id: it.id, xp: sess.gained, score: sess.score });
+  S.history.push({ d, type: it.type, id: it.id, xp: sess.gained, score: sess.score, kind: sess.kind, adv: !!sess.advanced });
   if (S.history.length > 800) S.history = S.history.slice(-800);
   sess.finished = true;
   syncSoon();
@@ -635,6 +636,20 @@ function libDetail(id) {
   scrollTo(0, 0);
 }
 
+// Finish estimate from your real pace: how many path steps you've completed per day recently.
+// Until there's a week of data, assume one play a day with roughly 2 in 3 being new material (the rest are revisits).
+function pathEta(left) {
+  if (!left) return "";
+  const days = S.started ? Math.round((Date.parse(today()) - Date.parse(S.started)) / 864e5) + 1 : 0;
+  const win = Math.min(28, days), since = addDays(today(), -(win - 1));
+  const advanced = S.history.filter(h => h.d >= since && (h.adv || (h.adv === undefined && h.kind !== "practice"))).length;
+  let perDay, basis;
+  if (win >= 7 && advanced > 0) { perDay = advanced / win; basis = `at your pace over the last ${win} days (${(perDay * 7).toFixed(1)} new plays a week)`; }
+  else { perDay = 2 / 3; basis = "at one play a day, with about a third being revisits of weaker techniques"; }
+  const daysLeft = Math.ceil(left / perDay), finish = new Date(Date.parse(addDays(today(), daysLeft) + "T12:00:00"));
+  const span = daysLeft < 60 ? daysLeft + " days" : Math.round(daysLeft / 30.4) + " months";
+  return `Finishing takes about ${span}, around ${finish.toLocaleDateString(undefined, { month: "long", year: "numeric" })}, ${basis}`;
+}
 function progressView() {
   const total = Object.values(S.xp).reduce((a, b) => a + b, 0);
   const minL = Math.min(...ORDER.map(k => lvl(S.xp[k])));
@@ -643,6 +658,7 @@ function progressView() {
   const avg = scored.length ? (scored.slice(-20).reduce((a, h) => a + h.score, 0) / Math.min(20, scored.length)).toFixed(1) : "–";
   let heat = ""; for (let i = 83; i >= 0; i--) { const k = addDays(today(), -i), n = S.log[k] || 0; heat += `<i class="${n > 1 ? "l2" : n ? "l1" : ""} ${i === 0 ? "t" : ""}" title="${k}"></i>`; }
   const left = Math.max(0, QUEUE.length - S.pos);
+  const eta = pathEta(left);
   return `<header><div class="eyebrow">${total} xp total</div><h1>Progress</h1></header>
   <section class="panel map">${rings(150, true)}
     <div style="display:flex;flex-direction:column;gap:6px;min-width:0"><span class="eyebrow">Intersection level</span><span class="big mono">L${minL}</span>
@@ -666,7 +682,7 @@ function progressView() {
   })()}
   <section class="panel"><div class="row2"><h3>Path</h3><span class="small muted mono">${S.pos}/${QUEUE.length}</span></div>
     <div class="bar" style="--k:var(--accent)"><span style="width:${Math.round(S.pos / QUEUE.length * 100)}%"></span></div>
-    <p class="small muted">${left ? `${left} plays of new material left, about ${Math.round(left / 30)} months at one a day. After that, Mastery mode cycles your spoken drills and challenges, with spaced reviews throughout.` : "Path complete. Mastery mode is on."}</p></section>
+    <p class="small muted">${left ? `${left} plays of new material left. ${eta}. After that, Mastery mode cycles your spoken drills and challenges, with spaced reviews throughout.` : "Path complete. Mastery mode is on."}</p></section>
   <section class="panel"><h3>Skills</h3><div class="ledger">${ORDER.map(k => { const xp = S.xp[k], L = lvl(xp);
     const lc = IX.lib.filter(l => l.sk === k && S.learned[l.id]).length;
     return `<div class="lrow" style="--k:var(--${k})"><span class="name"><i></i>${SK[k].name}</span><span class="lv"><span class="mono">L${L}</span> · ${rank(L)} · ${xp} xp</span><span class="bar"><span style="width:${lvlPct(xp)}%"></span></span><span class="small muted">${lc}/24 techniques learned · ${lvlFloor(L + 1) - xp} xp to L${L + 1}</span></div>`; }).join("")}</div></section>
