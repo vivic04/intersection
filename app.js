@@ -10,7 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "7";
+const APP_VERSION = "9";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -56,7 +56,8 @@ const CH = id => IX.ch.find(c => c.id === id);
 const blank = () => ({
   v: 1, xp: { q: 0, c: 0, e: 0, n: 0, s: 0 }, pos: 0, learned: {}, spoken: {}, chDone: {},
   log: {}, reviews: {}, missions: [], answers: {}, history: [], cur: null,
-  settings: { apiKey: "", rate: 1, voice: "", transcript: true, ghToken: "", gistId: "", lastSync: 0 }, started: null, savedAt: 0
+  mem: {}, lastMain: "new", redoRun: 0,
+  settings: { apiKey: "", provider: "anthropic", model: "", gradeApp: "claude", rate: 1, voice: "", transcript: true, ghToken: "", gistId: "", lastSync: 0 }, started: null, savedAt: 0
 });
 let S = blank();
 try { const raw = localStorage.getItem(KEY); if (raw) S = deepMerge(blank(), JSON.parse(raw)); } catch (e) {}
@@ -139,7 +140,11 @@ function seeded(seed) { let x = Math.abs(seed) % 2147483647 || 7; return () => (
 function hash(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) | 0; return h; }
 function itemSkills(item) { return item.type === "challenge" ? CH(item.id).sk : [T(item.id).sk]; }
 function itemTitle(item) { return item.type === "challenge" ? CH(item.id).t : T(item.id).t; }
-const typeLabel = { learn: "Learn + drill", speak: "Speaking drill", challenge: "Intersection challenge", mastery: "Mastery round" };
+const typeLabel = { learn: "Learn + drill", speak: "Speaking drill", challenge: "Intersection challenge", mastery: "Mastery round", redo: "Strengthen" };
+function itemLabel(item) {
+  if (item.redo) { const r = S.mem[item.id]; return "Strengthen" + (r && r.last ? " · last score " + r.last + "/5" : ""); }
+  return typeLabel[item.mastery ? "mastery" : item.type];
+}
 
 /* ============ Speech (TTS) ============ */
 let voices = [];
@@ -297,26 +302,101 @@ What worked: one sentence.
 Fix: the single most important improvement.
 Stronger version: my answer rewritten, as short as possible.`;
 }
+// Instant in-app grading with any provider's API key (the key stays on this phone).
+const PROVIDERS = {
+  anthropic: { name: "Anthropic (Claude)", model: MODEL, ph: "sk-ant-…", where: "console.anthropic.com → API keys" },
+  openai: { name: "OpenAI (ChatGPT)", model: "gpt-4o-mini", ph: "sk-…", where: "platform.openai.com → API keys" },
+  gemini: { name: "Google (Gemini)", model: "gemini-2.0-flash", ph: "AIza…", where: "aistudio.google.com → Get API key (has a free tier)" },
+  openrouter: { name: "OpenRouter (any model)", model: "openai/gpt-4o-mini", ph: "sk-or-…", where: "openrouter.ai → Keys" }
+};
+// Grade in an app you already pay for: opens it with the prompt filled in where the app supports that, and copies it either way.
+const GRADE_APPS = {
+  claude: { name: "Claude", url: q => "https://claude.ai/new?q=" + encodeURIComponent(q) },
+  chatgpt: { name: "ChatGPT", url: q => "https://chatgpt.com/?q=" + encodeURIComponent(q) },
+  gemini: { name: "Gemini", url: () => "https://gemini.google.com/app", paste: true },
+  perplexity: { name: "Perplexity", url: q => "https://www.perplexity.ai/search?q=" + encodeURIComponent(q) },
+  copilot: { name: "Copilot", url: () => "https://copilot.microsoft.com/", paste: true }
+};
+const prov = () => PROVIDERS[S.settings.provider] || PROVIDERS.anthropic;
+const gradeModel = () => (S.settings.model || "").trim() || prov().model;
 async function aiGrade(item, answer, spoken) {
-  const key = S.settings.apiKey.trim();
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-    body: JSON.stringify({ model: MODEL, max_tokens: 500, messages: [{ role: "user", content: gradePrompt(item, answer, spoken) }] })
-  });
+  const key = S.settings.apiKey.trim(), P = S.settings.provider || "anthropic", model = gradeModel();
+  const prompt = gradePrompt(item, answer, spoken);
+  let url, opts;
+  if (P === "anthropic") {
+    url = "https://api.anthropic.com/v1/messages";
+    opts = { headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+      body: JSON.stringify({ model, max_tokens: 500, messages: [{ role: "user", content: prompt }] }) };
+  } else if (P === "gemini") {
+    url = "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent";
+    opts = { headers: { "content-type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: 600 } }) };
+  } else {
+    url = P === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://api.openai.com/v1/chat/completions";
+    opts = { headers: { "content-type": "application/json", "Authorization": "Bearer " + key },
+      body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }] }) };
+  }
+  const res = await fetch(url, Object.assign({ method: "POST" }, opts));
   if (!res.ok) {
-    let msg = "The grader returned an error (" + res.status + ").";
-    if (res.status === 401) msg = "Your API key was rejected. Check it in Settings.";
-    if (res.status === 429) msg = "Too many requests. Wait a minute and try again.";
-    if (res.status === 400) { try { const j = await res.json(); msg = (j.error && j.error.message) || msg; } catch (e) {} }
+    let detail = "";
+    try { const j = await res.json(); detail = (j.error && (j.error.message || j.error)) || ""; } catch (e) {}
+    let msg = "The grader returned an error (" + res.status + ")" + (detail ? ": " + detail : ".");
+    if (res.status === 401 || res.status === 403) msg = "Your " + prov().name + " key was rejected. Check it in Settings.";
+    if (res.status === 429) msg = "Rate limited or out of credit. Wait a minute, or check your balance with " + prov().name + ".";
+    if (res.status === 404) msg = "Model \"" + model + "\" wasn't found. Change the model name in Settings.";
     throw new Error(msg);
   }
   const j = await res.json();
-  const text = (j.content || []).map(b => b.text || "").join("").trim();
+  let text = "";
+  if (P === "anthropic") text = (j.content || []).map(b => b.text || "").join("");
+  else if (P === "gemini") text = ((j.candidates || [])[0]?.content?.parts || []).map(p => p.text || "").join("");
+  else text = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || "";
+  text = text.trim();
   const m = text.match(/Score:\s*([0-5](?:\.\d)?)/i);
   return { text, score: m ? Math.round(+m[1]) : null };
 }
 async function copyText(t) { try { await navigator.clipboard.writeText(t); return true; } catch (e) { return false; } }
+
+/* ============ Mastery model ============ */
+// Each technique/challenge has a strength (0–100) and a due date. Your grades move both:
+// weak answers come back within a day or two; strong ones get spaced further and further apart.
+const MASTERED = 80, WEAK = 60;
+function memOf(id) { return S.mem[id]; }
+function applyGrade(id, score) {
+  if (!id || score == null) return;
+  const sc = Math.max(1, Math.min(5, Math.round(score)));
+  const r = S.mem[id] || { m: 0, int: 0, n: 0 };
+  r.m = r.n ? Math.round(0.55 * r.m + 0.45 * sc * 20) : sc * 20;
+  r.int = sc <= 2 ? 1 : sc === 3 ? 3 : sc === 4 ? Math.max(5, Math.round((r.int || 2) * 2)) : Math.max(8, Math.round((r.int || 3) * 3));
+  r.int = Math.min(120, r.int);
+  r.n++; r.last = sc; r.at = today(); r.due = addDays(today(), r.int);
+  S.mem[id] = r;
+}
+function nudge(id, ok) { // quick quiz reviews nudge strength without overriding drill grades
+  const r = S.mem[id]; if (!r) return;
+  r.m = Math.max(0, Math.min(100, r.m + (ok ? 4 : -12)));
+  if (!ok) { r.due = addDays(today(), 1); r.int = 1; }
+}
+function memStatus(id) {
+  const r = S.mem[id];
+  if (!r) return S.learned[id] ? { label: "Learned", cls: "" } : { label: "New", cls: "" };
+  if (r.m >= MASTERED && r.n >= 2) return { label: "Mastered", cls: "good" };
+  if (r.m >= WEAK) return { label: "Solid", cls: "ok" };
+  return { label: "Needs work", cls: "weak" };
+}
+function dueStrengthen() {
+  return Object.entries(S.mem).filter(([, r]) => r.due <= today())
+    .sort((a, b) => a[1].m - b[1].m || a[1].due.localeCompare(b[1].due)).map(([id, r]) => ({ id, r }));
+}
+function strengthenItem(id) {
+  return id.startsWith("x") ? { type: "challenge", id, redo: true } : { type: "speak", id, redo: true };
+}
+// Backfill strength from earlier grades for anyone who started before this existed
+(function migrateMem() {
+  if (Object.keys(S.mem).length) return;
+  for (const h of S.history) if (h.score != null && h.score > 0 && (T(h.id) || CH(h.id))) applyGrade(h.id, h.score);
+  for (const id of Object.keys(S.learned)) if (!S.mem[id]) S.mem[id] = { m: 40, int: 2, n: 0, due: today() };
+})();
 
 /* ============ Session engine ============ */
 let view = "today", sess = null, libSkill = "q";
@@ -329,7 +409,16 @@ function newSession(kind, item) {
   return s;
 }
 function nextItem() {
-  if (S.pos < QUEUE.length) return QUEUE[S.pos];
+  const due = dueStrengthen();
+  const weakDue = due.filter(d => d.r.m < WEAK);
+  if (S.pos < QUEUE.length) {
+    // Mix: after a new session, revisit something due; a growing backlog of weak items gets priority,
+    // but never more than 2 strengthen sessions in a row so new material keeps flowing.
+    const wantRedo = due.length && (S.lastMain === "new" || (weakDue.length >= 4 && S.redoRun < 2));
+    if (wantRedo) return strengthenItem((weakDue[0] || due[0]).id);
+    return QUEUE[S.pos];
+  }
+  if (due.length) return Object.assign(strengthenItem(due[0].id), { mastery: true });
   // Mastery mode: cycle back through spoken drills and challenges, least recently practiced first
   const pool = IX.lib.map(t => ({ type: "speak", id: t.id, last: S.spoken[t.id] || "" })).concat(IX.ch.map(c => ({ type: "challenge", id: c.id, last: S.chDone[c.id] || "" })));
   pool.sort((a, b) => a.last.localeCompare(b.last));
@@ -362,7 +451,13 @@ function finishSession() {
     S.learned[it.id] = d;
   } else if (it.type === "speak") S.spoken[it.id] = d;
   else S.chDone[it.id] = d;
-  if (sess.kind !== "practice" && !it.mastery && QUEUE[S.pos] && QUEUE[S.pos].id === it.id && QUEUE[S.pos].type === it.type) S.pos++;
+  if (sess.score != null) applyGrade(it.id, sess.score || 1);
+  else if (it.type === "learn" && !S.mem[it.id]) S.mem[it.id] = { m: sess.quizPick === T(it.id).q[0][2] ? 35 : 20, int: 1, n: 0, due: addDays(d, 1) };
+  if (sess.kind !== "practice") {
+    if (it.redo) { S.lastMain = "redo"; S.redoRun = (S.redoRun || 0) + 1; }
+    else { S.lastMain = "new"; S.redoRun = 0; }
+  }
+  if (sess.kind !== "practice" && !it.redo && !it.mastery && QUEUE[S.pos] && QUEUE[S.pos].id === it.id && QUEUE[S.pos].type === it.type) S.pos++;
   S.log[d] = (S.log[d] || 0) + 1;
   S.history.push({ d, type: it.type, id: it.id, xp: sess.gained, score: sess.score });
   if (S.history.length > 800) S.history = S.history.slice(-800);
@@ -419,13 +514,13 @@ function todayView() {
   let heroBody;
   if (doneToday && !resume) {
     heroBody = `<div class="eyebrow">Today · done</div><h2>Nice. Today's rep is in.</h2>
-      <p class="small" style="opacity:.8">Up next: ${esc(itemTitle(item))} · ${typeLabel[item.type]}</p>
+      <p class="small" style="opacity:.8">Up next: ${esc(itemTitle(item))} · ${itemLabel(item)}</p>
       <div class="btnrow"><button class="btn" data-bonus>Do a bonus rep</button></div>`;
   } else {
-    heroBody = `<div class="eyebrow">${resume ? "Resume today's rep" : "Today's rep"} · Session ${item.mastery ? "∞" : dayN} of ${QUEUE.length}</div>
+    heroBody = `<div class="eyebrow">${resume ? "Resume today's rep" : "Today's rep"} · ${item.redo ? "Revisit" : "Session " + (item.mastery ? "∞" : dayN) + " of " + QUEUE.length}</div>
       <h2>${esc(itemTitle(item))}</h2>
       <div class="chips">${sks.map(k => `<span class="chip" style="--k:var(--${k});background:color-mix(in srgb,var(--${k}) 30%,transparent);color:var(--bg)">${SK[k].name}</span>`).join("")}</div>
-      <div class="meta"><span>${typeLabel[item.mastery ? "mastery" : item.type]}</span><span>~5 min</span>${dueN ? `<span>+ ${Math.min(2, dueN)} quick review${dueN > 1 ? "s" : ""}</span>` : ""}</div>
+      <div class="meta"><span>${itemLabel(item)}</span><span>~5 min</span>${dueN ? `<span>+ ${Math.min(2, dueN)} quick review${dueN > 1 ? "s" : ""}</span>` : ""}</div>
       <button class="btn" data-start>${resume ? "Continue" : "Start"}</button>`;
   }
   return `
@@ -457,13 +552,13 @@ function libraryView() {
   for (let tier = 1; tier <= 3; tier++) {
     html += `<section class="panel" style="--k:var(--${k})"><div class="eyebrow tier">${TIER[tier]}</div><div>`;
     list.filter(l => l.tier === tier).forEach(l => {
-      const st = S.learned[l.id] ? (S.spoken[l.id] ? "Mastered ✓" : "Learned") : "New";
-      html += `<button class="lesson" data-open="${l.id}"><span class="t">${esc(l.t)}</span><span class="s">${esc(l.src)}</span><span class="st ${S.learned[l.id] ? "d" : ""}">${st}</span></button>`;
+      const st = memStatus(l.id), r = S.mem[l.id];
+      html += `<button class="lesson" data-open="${l.id}"><span class="t">${esc(l.t)}</span><span class="s">${esc(l.src)}</span><span class="st"><span class="pill ${st.cls}">${st.label}</span>${r ? `<span class="minibar"><span style="width:${r.m}%"></span></span>` : ""}</span></button>`;
     });
     html += `</div></section>`;
   }
   html += `<section class="panel" style="--k:var(--${k})"><div class="eyebrow tier">Intersection challenges</div><div>`;
-  chs.forEach(c => html += `<button class="lesson" data-opench="${c.id}"><span class="t">${esc(c.t)}</span><span class="s">${c.sk.map(s => SK[s].name).join(" + ")}</span><span class="st ${S.chDone[c.id] ? "d" : ""}">${S.chDone[c.id] ? "Done ✓" : "Try"}</span></button>`);
+  chs.forEach(c => html += `<button class="lesson" data-opench="${c.id}"><span class="t">${esc(c.t)}</span><span class="s">${c.sk.map(s => SK[s].name).join(" + ")}</span><span class="st">${S.mem[c.id] ? `<span class="pill ${memStatus(c.id).cls}">${memStatus(c.id).label}</span>` : `<span class="pill">Try</span>`}</span></button>`);
   return html + `</div></section>`;
 }
 
@@ -500,6 +595,18 @@ function progressView() {
     <div class="stat"><b class="mono">${bestStreak()}</b><span>Best streak</span></div>
     <div class="stat"><b class="mono">${avg}</b><span>Avg score (last 20)</span></div>
   </div>
+  ${(() => {
+    const learnedIds = Object.keys(S.mem);
+    if (!learnedIds.length) return "";
+    const cnt = { good: 0, ok: 0, weak: 0 }; learnedIds.forEach(id => { const c = memStatus(id).cls; if (cnt[c] != null) cnt[c]++; });
+    const weakest = learnedIds.filter(id => S.mem[id].m < WEAK).sort((x, y) => S.mem[x].m - S.mem[y].m).slice(0, 5);
+    const dueN = dueStrengthen().length;
+    return `<section class="panel"><div class="row2"><h3>Mastery</h3><span class="small muted mono">${dueN} due to revisit</span></div>
+      <div class="stats"><div class="stat"><b class="mono" style="color:var(--good)">${cnt.good}</b><span>Mastered</span></div><div class="stat"><b class="mono">${cnt.ok}</b><span>Solid</span></div><div class="stat"><b class="mono" style="color:var(--bad)">${cnt.weak}</b><span>Needs work</span></div></div>
+      ${weakest.length ? `<span class="eyebrow">Weakest right now</span><div>${weakest.map(id => { const k = T(id) ? T(id).sk : CH(id).sk[0];
+        return `<button class="lesson" style="--k:var(--${k})" data-strength="${id}"><span class="t">${esc(itemTitle({ type: T(id) ? "learn" : "challenge", id }))}</span><span class="s">Last score ${S.mem[id].last || "–"}/5 · strength ${S.mem[id].m}%</span><span class="st"><span class="pill weak">Practise</span></span></button>`; }).join("")}</div>` : `<p class="small muted">Nothing weak right now. Weak scores show up here.</p>`}
+      <p class="small muted">Score 1–2 and it comes back tomorrow. Score 3 and it's back in a few days. Score 4–5 and it's spaced out further each time, up to months. Your daily rep mixes these in with new material.</p></section>`;
+  })()}
   <section class="panel"><div class="row2"><h3>Path</h3><span class="small muted mono">${S.pos}/${QUEUE.length}</span></div>
     <div class="bar" style="--k:var(--accent)"><span style="width:${Math.round(S.pos / QUEUE.length * 100)}%"></span></div>
     <p class="small muted">${left ? `${left} sessions of new material left, about ${Math.round(left / 30)} months at one a day. After that, Mastery mode cycles your spoken drills and challenges, with spaced reviews throughout.` : "Path complete. Mastery mode is on."}</p></section>
@@ -513,11 +620,19 @@ function settingsView() {
   const st = S.settings;
   return `<header><h1>Settings</h1></header>
   <section class="panel">
-    <h3>AI grading</h3>
-    <p class="small muted">Without a key, use "Grade in Claude": it copies your answer and the rubric and opens the Claude app, using your existing subscription at no extra cost. With an Anthropic API key, grading happens instantly in the app; it's billed per use, roughly a fraction of a cent per grade on ${MODEL}. The key stays on this phone only.</p>
-    <div class="field"><label for="apikey">Anthropic API key (optional)</label><input id="apikey" type="password" autocomplete="off" placeholder="sk-ant-…" value="${esc(st.apiKey)}"></div>
-    <div class="btnrow"><button class="btn soft" id="saveKey">Save key</button>${st.apiKey ? `<button class="btn ghost" id="clearKey">Remove</button>` : ""}</div>
-    <p class="small muted">Get one at console.anthropic.com → API keys. Set a low monthly spend limit there.</p>
+    <h3>Grading app</h3>
+    <p class="small muted">Free option: the grade button opens this app with your answer, the rubric and the model answer filled in (or copied, ready to paste), using the subscription you already have.</p>
+    <div class="field"><label for="gradeApp">Open grading in</label><select id="gradeApp">${Object.entries(GRADE_APPS).map(([k, a]) => `<option value="${k}" ${k === (st.gradeApp || "claude") ? "selected" : ""}>${a.name}${a.paste ? " (paste the copied prompt)" : ""}</option>`).join("")}</select></div>
+  </section>
+  <section class="panel">
+    <h3>Instant AI grading (optional)</h3>
+    <p class="small muted">Add an API key from any provider and answers are graded right inside the app. Billed per use by the provider, typically a fraction of a cent per grade. The key stays on this phone and is never included in backups.</p>
+    <div class="field"><label for="provider">Provider</label><select id="provider">${Object.entries(PROVIDERS).map(([k, p]) => `<option value="${k}" ${k === (st.provider || "anthropic") ? "selected" : ""}>${p.name}</option>`).join("")}</select></div>
+    <div class="field"><label for="apikey">API key</label><input id="apikey" type="password" autocomplete="off" placeholder="${prov().ph}" value="${esc(st.apiKey)}"></div>
+    <div class="field"><label for="model">Model</label><input id="model" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${prov().model}" value="${esc(st.model || "")}"></div>
+    <p class="small muted">Leave Model blank for the default (${prov().model}). Get a key at ${prov().where}.</p>
+    <div class="btnrow"><button class="btn soft" id="saveKey">Save</button>${st.apiKey ? `<button class="btn ghost" id="testKey">Test key</button><button class="btn ghost" id="clearKey">Remove</button>` : ""}</div>
+    <p class="small muted" id="keyMsg"></p>
   </section>
   <section class="panel">
     <h3>Voice</h3>
@@ -655,14 +770,16 @@ function gradeStep() {
     html += `<h2>Your answer</h2><div class="model" style="background:var(--surface);border:1px solid var(--line)">${esc(sess.draft) || "<i>No answer written.</i>"}</div>`;
   }
   if (sess.score != null) {
-    html += `<div class="result"><div class="row2"><span class="eyebrow">${sess.gradedBy === "ai" ? "AI coach" : sess.gradedBy === "claude" ? "Claude" : "Self-check"}</span><span class="score">${sess.score}/5</span></div>${sess.gradeText ? `<div>${esc(sess.gradeText)}</div>` : ""}</div>
+    html += `<div class="result"><div class="row2"><span class="eyebrow">${sess.gradedBy === "ai" ? "AI coach" : sess.gradedBy === "claude" || sess.gradedBy === "app" ? (GRADE_APPS[S.settings.gradeApp] || GRADE_APPS.claude).name : "Self-check"}</span><span class="score">${sess.score}/5</span></div>${sess.gradeText ? `<div>${esc(sess.gradeText)}</div>` : ""}</div>
       <div class="panel"><span class="eyebrow">Model answer</span><p>${esc(d.model)}</p></div>
       <button class="btn wide" data-next>${stepsFor(it).length - 1 === sess.step ? "Finish ✓" : "Continue →"}</button>`;
     return html;
   }
-  html += `<div class="btnrow">${hasKey ? `<button class="btn k" id="aiGrade">Grade with AI</button>` : ""}<a class="btn ${hasKey ? "ghost" : "k"}" id="claudeGrade" href="https://claude.ai/new" target="_blank" rel="noopener" style="text-align:center;text-decoration:none;display:flex;align-items:center;justify-content:center">Grade in Claude app</a></div>
+  const GA = GRADE_APPS[S.settings.gradeApp] || GRADE_APPS.claude;
+  html += `<div class="btnrow">${hasKey ? `<button class="btn k" id="aiGrade">Grade with AI</button>` : ""}<a class="btn ${hasKey ? "ghost" : "k"}" id="claudeGrade" href="${GA.url("")}" target="_blank" rel="noopener" style="text-align:center;text-decoration:none;display:flex;align-items:center;justify-content:center">Grade in ${GA.name}</a></div>
+    <p class="small muted">Switch grading apps or add an API key in Settings.</p>
     <div id="aiOut"></div>
-    <div id="claudeScore" hidden class="panel"><span class="eyebrow">What score did Claude give you?</span><div class="scores">${[1, 2, 3, 4, 5].map(n => `<button data-cscore="${n}">${n}</button>`).join("")}</div></div>
+    <div id="claudeScore" hidden class="panel"><span class="eyebrow">What score did ${GA.name} give you?</span><div class="scores">${[1, 2, 3, 4, 5].map(n => `<button data-cscore="${n}">${n}</button>`).join("")}</div></div>
     <details class="panel"><summary style="font-weight:700;cursor:pointer">Or check yourself</summary>
       ${rub ? `<p class="small muted">Tick what you actually did:</p><div class="rub">${rub.map((r, i) => `<label><input type="checkbox" data-tick="${i}"><span>${esc(r)}</span></label>`).join("")}</div>` : `<p class="small muted">Compare with the model answer, then rate yourself.</p>`}
       <div class="model"><span class="eyebrow">Model answer</span><p>${esc(d.model)}</p></div>
@@ -680,7 +797,11 @@ function doneStep() {
   const nx = nextItem();
   return `<div class="eyebrow">Session complete</div>
     <div class="row2" style="align-items:flex-end"><span class="xpbig" style="color:var(--k)">+${sess.gained}</span><span class="streak">${flame}<b class="mono">${streak()}</b></span></div>
-    <p class="muted">xp earned. ${sess.kind === "practice" ? "Practice logged." : `Next time: <b>${esc(itemTitle(nx))}</b> (${typeLabel[nx.mastery ? "mastery" : nx.type]}).`}</p>
+    <p class="muted">xp earned. ${sess.kind === "practice" ? "Practice logged." : `Next time: <b>${esc(itemTitle(nx))}</b> (${itemLabel(nx)}).`}</p>
+    ${sess.score != null && S.mem[sess.item.id] ? (() => { const r = S.mem[sess.item.id], st = memStatus(sess.item.id);
+      return `<div class="panel"><div class="row2"><span class="eyebrow">${esc(itemTitle(sess.item))}</span><span class="pill ${st.cls}">${st.label}</span></div>
+        <div class="bar"><span style="width:${r.m}%"></span></div>
+        <p class="small muted">${r.last <= 2 ? "This one needs more reps. It'll come back tomorrow." : r.last === 3 ? `Getting there. You'll see it again in ${r.int} days.` : `Strong. Next check-in in ${r.int} days.`}</p></div>`; })() : ""}
     <div class="confetti">${ORDER.map(k => `<i style="background:var(--${k})"></i>`).join("")}</div>
     <button class="btn wide" data-exit>Done</button>`;
 }
@@ -699,6 +820,7 @@ function bind() {
       save(); syncSoon(); render();
     });
   }
+  if (view === "progress") $$("[data-strength]").forEach(b => b.onclick = () => startSession("practice", strengthenItem(b.dataset.strength)));
   if (view === "library") {
     $$("[data-seg]").forEach(b => b.onclick = () => { libSkill = b.dataset.seg; render(); });
     $$("[data-open]").forEach(b => b.onclick = () => libDetail(b.dataset.open));
@@ -708,8 +830,17 @@ function bind() {
   if (view === "session") bindSession();
 }
 function bindSettings() {
-  $("#saveKey").onclick = () => { S.settings.apiKey = $("#apikey").value.trim(); save(); toast(S.settings.apiKey ? "Key saved on this phone" : "Key cleared"); render(); };
+  $("#gradeApp").onchange = e => { S.settings.gradeApp = e.target.value; save(); toast("Grading opens in " + GRADE_APPS[e.target.value].name); };
+  $("#provider").onchange = e => { S.settings.provider = e.target.value; S.settings.model = ""; save(); render(); };
+  $("#saveKey").onclick = () => { S.settings.apiKey = $("#apikey").value.trim(); S.settings.model = $("#model").value.trim(); save(); toast(S.settings.apiKey ? "Saved on this phone" : "Key cleared"); render(); };
   const ck = $("#clearKey"); if (ck) ck.onclick = () => { S.settings.apiKey = ""; save(); render(); };
+  const tk = $("#testKey"); if (tk) tk.onclick = async () => {
+    const msg = $("#keyMsg"); tk.disabled = true; msg.textContent = "Testing with a sample answer…";
+    try { const r = await aiGrade({ type: "learn", id: IX.lib[0].id }, "The report was late because data came Thursday, because finance refreshes on Thursdays. Fix: use Wednesday's snapshot.", false);
+      msg.innerHTML = `<b style="color:var(--good)">Works.</b> ${esc(prov().name)} · ${esc(gradeModel())} gave the sample ${r.score ?? "?"}/5.`; }
+    catch (e) { msg.innerHTML = `<b style="color:var(--bad)">Didn't work.</b> ${esc(e.message)}`; }
+    tk.disabled = false;
+  };
   $("#voice").onchange = e => { S.settings.voice = e.target.value; save(); };
   $("#rate").oninput = e => { S.settings.rate = +e.target.value; $("#rateVal").textContent = S.settings.rate + "×"; save(); };
   $("#trans").onchange = e => { S.settings.transcript = e.target.checked; save(); };
@@ -770,6 +901,7 @@ function bindSession() {
     sess.revPick = +b.dataset.rev;
     r.n = (r.n || 0) + 1;
     if (ok) { r.int = Math.min(180, Math.round(r.int * 2.5)); award(t.sk, 5); } else { r.int = 2; }
+    nudge(id, ok);
     r.due = addDays(today(), r.int); S.reviews[id] = r; save(); render();
   });
   $$("[data-quiz]").forEach(b => b.onclick = () => {
@@ -812,11 +944,12 @@ function bindSession() {
     if (!answer) { e.preventDefault(); toast("There's nothing to grade yet. Type what you said."); return; }
     if (sess.item.type !== "learn") sess.transcript = answer;
     const p = gradePrompt(sess.item, answer, sess.item.type !== "learn");
-    cg.href = "https://claude.ai/new?q=" + encodeURIComponent(p);
-    copyText(p).then(ok => toast(ok ? "Prompt also copied, in case it isn't filled in." : "Opening Claude…"));
+    const GA = GRADE_APPS[S.settings.gradeApp] || GRADE_APPS.claude;
+    cg.href = GA.url(p);
+    copyText(p).then(ok => toast(ok ? (GA.paste ? "Prompt copied. Paste it into " + GA.name + "." : "Prompt also copied, in case it isn't filled in.") : "Opening " + GA.name + "…"));
     $("#claudeScore").hidden = false; save();
   };
-  $$("[data-cscore]").forEach(b => b.onclick = () => { sess.score = +b.dataset.cscore; sess.gradedBy = "claude"; sess.gradeText = ""; award(sks, sess.score * 5); save(); render(); });
+  $$("[data-cscore]").forEach(b => b.onclick = () => { sess.score = +b.dataset.cscore; sess.gradedBy = "app"; sess.gradeText = ""; award(sks, sess.score * 5); save(); render(); });
   $$("[data-self]").forEach(b => b.onclick = () => { sess.score = +b.dataset.self; sess.gradedBy = "self"; award(sks, sess.score * 4); save(); render(); });
   const sr = $("#selfRub"); if (sr) sr.onclick = () => {
     const ticks = $$("[data-tick]").filter(x => x.checked).length, n = $$("[data-tick]").length;
