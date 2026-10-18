@@ -117,7 +117,24 @@ function say(text, btn) {
 }
 const speakIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>`;
 const listenBtn = (id, label = "Listen") => `<button class="speakbtn" data-say="${id}">${speakIcon}${label}</button>`;
-const sayTexts = {};
+const sayTexts = {}, sayClips = {};
+// Pre-recorded narration (audio/<key>.mp3). Plays through Silent mode; falls back to the device voice if a clip is missing.
+const player = new Audio(); player.preload = "none";
+let playerBtn = null;
+function clearPlaying() { $$(".speakbtn").forEach(b => b.classList.remove("on")); playerBtn = null; }
+player.onended = player.onpause = clearPlaying;
+function playClip(key, text, btn) {
+  try { speechSynthesis.cancel(); } catch (e) {}
+  if (playerBtn === btn && !player.paused) { player.pause(); return; }
+  setAudioSession("playback");
+  clearPlaying();
+  player.onerror = () => { clearPlaying(); say(text, btn); };
+  player.src = "audio/" + key + ".mp3";
+  player.playbackRate = S.settings.rate || 1;
+  playerBtn = btn; if (btn) btn.classList.add("on");
+  const p = player.play();
+  if (p && p.catch) p.catch(err => { if (err && err.name === "NotAllowedError") { clearPlaying(); toast("Tap Listen again to play."); } });
+}
 
 /* ============ Recording ============ */
 const Rec = { stream: null, mr: null, chunks: [], url: null, recog: null, final: "", interim: "", t0: 0, timer: null, secs: 0, on: false };
@@ -274,7 +291,7 @@ function startSession(kind, item) {
 }
 function curStep() { if (sess.ri < sess.reviews.length) return "review"; return stepsFor(sess.item)[sess.step] || "done"; }
 function advance() {
-  try { speechSynthesis.cancel(); } catch (e) {}
+  try { speechSynthesis.cancel(); player.pause(); } catch (e) {}
   if (sess.ri < sess.reviews.length) { sess.ri++; sess.revPick = null; sess.revQi = null; }
   else { sess.step++; }
   if (curStep() === "done") finishSession();
@@ -296,7 +313,7 @@ function finishSession() {
 function exitSession() {
   try { speechSynthesis.cancel(); } catch (e) {}
   if (Rec.on) stopRec();
-  ttsActive = false;
+  ttsActive = false; try { player.pause(); } catch (e) {}
   if (sess && sess.finished && S.cur === sess) S.cur = null;
   sess = null; view = "today"; save(); render(); scrollTo(0, 0);
 }
@@ -490,6 +507,7 @@ function reviewStep() {
 }
 function learnStep() {
   const t = T(sess.item.id);
+  sayClips.learn = t.id + "_learn";
   sayTexts.learn = t.t + ". " + t.idea + " " + t.steps.join(". ");
   return `<div class="eyebrow">Learn · ${TIER[t.tier]}</div><h1>${esc(t.t)}</h1><p class="src">${esc(t.src)}</p>
     ${listenBtn("learn")}
@@ -507,7 +525,7 @@ function quizStep() {
 }
 function drillStep() {
   const t = T(sess.item.id);
-  sayTexts.drill = t.drill;
+  sayClips.drill = t.id + "_drill"; sayTexts.drill = t.drill;
   return `<div class="eyebrow">Written drill · 2–3 min</div><h2>${esc(t.drill)}</h2>${listenBtn("drill", "Read it to me")}
     <textarea id="ans" placeholder="Write it out, or tap the mic on your keyboard to dictate. Rough is fine.">${esc(sess.draft)}</textarea>
     <button class="btn wide" data-drilldone>Get graded →</button>
@@ -515,7 +533,7 @@ function drillStep() {
 }
 function recapStep() {
   const t = T(sess.item.id);
-  sayTexts.recap = t.t + ". " + t.idea;
+  sayClips.recap = t.id + "_learn"; sayTexts.recap = t.t + ". " + t.idea;
   return `<div class="eyebrow">Speaking drill · recap</div><h1>${esc(t.t)}</h1><p class="src">${esc(t.src)}</p>${listenBtn("recap")}
     <p class="idea">${esc(t.idea)}</p><ul class="list">${t.steps.map(s => `<li>${esc(s)}</li>`).join("")}</ul>
     <button class="btn wide" data-next>Show me the scenario →</button>`;
@@ -523,7 +541,7 @@ function recapStep() {
 function sceneData() { return sess.item.type === "challenge" ? CH(sess.item.id) : T(sess.item.id); }
 function sceneStep() {
   const d = sceneData();
-  sayTexts.scene = d.scene + " " + d.ask;
+  sayClips.scene = d.id + "_scene"; sayTexts.scene = d.scene + " " + d.ask;
   return `<div class="eyebrow">${sess.item.type === "challenge" ? "Intersection challenge" : "Scenario"}</div>
     ${sess.item.type === "challenge" ? `<h1>${esc(d.t)}</h1>` : ""}
     <div class="scene">${esc(d.scene)}</div>${listenBtn("scene", "Read it to me")}
@@ -598,7 +616,7 @@ function doneStep() {
 /* ============ Binding ============ */
 function bind() {
   $$("[data-tab]").forEach(b => b.onclick = () => { if (view === "session") return; view = b.dataset.tab; render(); scrollTo(0, 0); });
-  $$("[data-say]").forEach(b => b.onclick = () => say(sayTexts[b.dataset.say], b));
+  $$("[data-say]").forEach(b => b.onclick = () => playClip(sayClips[b.dataset.say], sayTexts[b.dataset.say], b));
   if (view === "today") {
     const st = $("[data-start]"); if (st) st.onclick = () => startSession(S.cur && !S.cur.finished && S.cur.date === today() ? S.cur.kind : "daily");
     const bo = $("[data-bonus]"); if (bo) bo.onclick = () => startSession("bonus");
@@ -667,7 +685,7 @@ function bindSession() {
     if (Rec.busy) return;
     if (!Rec.on) {
       Rec.busy = true;
-      try { speechSynthesis.cancel(); } catch (e) {}
+      try { speechSynthesis.cancel(); player.pause(); } catch (e) {}
       const ok = await startRec(); Rec.busy = false; if (!ok) return;
       rb.classList.add("on"); $("#recHint").textContent = "Recording… tap the button or Stop to finish"; $("#liveText").textContent = SR && S.settings.transcript ? "Listening…" : "Recording. Transcript is off.";
       const nb = $("[data-recdone]"); if (nb) nb.disabled = true;
