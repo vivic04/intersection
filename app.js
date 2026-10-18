@@ -10,6 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
+const APP_VERSION = "5";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -116,13 +117,15 @@ function say(text, btn) {
   ttsCheck = setTimeout(() => { if (!started && !synth.speaking) { ttsActive = false; toast("No sound? Check your volume, or turn off Silent mode, then tap Listen again."); } }, 2500);
 }
 const speakIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>`;
-const listenBtn = (id, label = "Listen") => `<button class="speakbtn" data-say="${id}">${speakIcon}${label}</button>`;
+const listenBtn = (id, label = "Listen") => `<button class="speakbtn" data-say="${id}" data-label="${label}">${speakIcon}<span class="t mono">${label}</span></button>`;
 const sayTexts = {}, sayClips = {};
 // Pre-recorded narration (audio/<key>.mp3). Plays through Silent mode; falls back to the device voice if a clip is missing.
 const player = new Audio(); player.preload = "none";
 let playerBtn = null;
-function clearPlaying() { $$(".speakbtn").forEach(b => b.classList.remove("on")); playerBtn = null; }
+function clearPlaying() { $$(".speakbtn").forEach(b => { b.classList.remove("on"); const sp = b.querySelector(".t"); if (sp) sp.textContent = b.dataset.label; }); playerBtn = null; }
 player.onended = player.onpause = clearPlaying;
+// Show elapsed time on the button so it's obvious whether audio is actually playing
+player.ontimeupdate = () => { if (playerBtn) { const sp = playerBtn.querySelector(".t"); if (sp) sp.textContent = fmtTime(Math.floor(player.currentTime)) + " / " + (isFinite(player.duration) ? fmtTime(Math.floor(player.duration)) : "…"); } };
 function playClip(key, text, btn) {
   try { speechSynthesis.cancel(); } catch (e) {}
   if (playerBtn === btn && !player.paused) { player.pause(); return; }
@@ -465,7 +468,8 @@ function settingsView() {
     <div class="field"><label for="rate">Reading speed: <span class="mono" id="rateVal">${st.rate}×</span></label><input id="rate" type="range" min="0.7" max="1.3" step="0.05" value="${st.rate}"></div>
     <div class="toggle"><label for="trans">Live transcript while recording</label><input id="trans" type="checkbox" ${st.transcript ? "checked" : ""}></div>
     <p class="small muted">If recording misbehaves on your phone, turn the live transcript off. You can still type or dictate what you said afterwards. Tip: download an Enhanced voice in iPhone Settings → Accessibility → Spoken Content → Voices for much more natural reading.</p>
-    <button class="btn ghost" id="testVoice">Test voice</button>
+    <button class="btn ghost" id="testVoice">Sound check</button>
+    <p class="small muted mono" id="soundDiag">App version ${APP_VERSION}</p>
   </section>
   <section class="panel">
     <h3>Backup</h3>
@@ -641,7 +645,15 @@ function bindSettings() {
   $("#voice").onchange = e => { S.settings.voice = e.target.value; save(); };
   $("#rate").oninput = e => { S.settings.rate = +e.target.value; $("#rateVal").textContent = S.settings.rate + "×"; save(); };
   $("#trans").onchange = e => { S.settings.transcript = e.target.checked; save(); };
-  $("#testVoice").onclick = () => say("Here's how I'll read your scenarios. Ask, then pause, and let the silence work.");
+  $("#testVoice").onclick = () => {
+    const out = $("#soundDiag"); const a = new Audio("audio/q1_learn.mp3"); setAudioSession("playback");
+    const t0 = Date.now(); let log = "v" + APP_VERSION + " · audioSession: " + (navigator.audioSession ? navigator.audioSession.type : "n/a");
+    out.textContent = log + " · loading…";
+    a.onerror = () => { out.textContent = log + " · clip error " + (a.error ? a.error.code : "?"); };
+    a.play().then(() => {
+      setTimeout(() => { out.textContent = log + " · playing, at " + a.currentTime.toFixed(1) + "s after 3s, volume " + a.volume + (a.currentTime > 1 ? ". Audio IS playing. If you heard nothing, check media volume, Silent mode, or a connected Bluetooth device." : ". Audio isn't advancing."); a.pause(); }, 3000);
+    }).catch(e => { out.textContent = log + " · play blocked: " + e.name; });
+  };
   $("#exportBtn").onclick = async () => {
     const data = JSON.stringify(Object.assign({}, S, { settings: Object.assign({}, S.settings, { apiKey: "" }) }));
     if (await copyText(data)) toast("Backup copied. Paste it into Notes.");
