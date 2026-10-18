@@ -1,5 +1,5 @@
 // Offline support: app shell is cached on install; everything else is cached as it's fetched.
-const CACHE = "intersection-v5";
+const CACHE = "intersection-v6";
 const SHELL = ["./", "index.html", "app.css", "app.js", "manifest.webmanifest",
   "content/core.js", "content/questions.js", "content/comms.js", "content/execution.js",
   "content/negotiation.js", "content/sales.js", "content/challenges.js",
@@ -14,7 +14,7 @@ self.addEventListener("fetch", e => {
   const sameOrigin = url.origin === location.origin;
   if (sameOrigin) {
     // Network first for the app itself so updates arrive; fall back to cache offline.
-    e.respondWith(fetch(req).then(res => { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); return res; }).catch(() => caches.match(req).then(r => r || caches.match("index.html"))));
+    e.respondWith(fetch(req, { cache: "no-cache" }).then(res => { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); return res; }).catch(() => caches.match(req).then(r => r || caches.match("index.html"))));
   } else if (/fonts\.(googleapis|gstatic)\.com$/.test(url.hostname)) {
     e.respondWith(caches.match(req).then(r => r || fetch(req).then(res => { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); return res; })));
   }

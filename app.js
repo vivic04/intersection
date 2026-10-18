@@ -10,7 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "5";
+const APP_VERSION = "6";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -745,5 +745,10 @@ function bindSession() {
 /* ============ Boot ============ */
 if (S.cur && S.cur.date !== today() && !S.cur.finished) { /* stale unfinished session from a previous day: keep item, reset reviews */ S.cur.date = today(); S.cur.reviews = []; S.cur.ri = 0; }
 render();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+if ("serviceWorker" in navigator) {
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then(r => r.update()).catch(() => {});
+  // When a new version takes over, reload once so the update shows immediately (never mid-session)
+  navigator.serviceWorker.addEventListener("controllerchange", () => { if (hadController && view !== "session") location.reload(); });
+}
 document.addEventListener("visibilitychange", () => { if (!document.hidden && view === "today") render(); });
