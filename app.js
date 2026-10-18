@@ -10,7 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "10";
+const APP_VERSION = "11";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -522,15 +522,15 @@ function todayView() {
   const install = !isStandalone() ? `<div class="install"><b>Install on your iPhone</b><p class="small muted">In Safari, tap Share, then "Add to Home Screen". It'll open full-screen like a normal app and work offline.</p></div>` : "";
   let heroBody;
   if (doneToday && !resume) {
-    heroBody = `<div class="eyebrow">Today · done</div><h2>Nice. Today's rep is in.</h2>
+    heroBody = `<div class="eyebrow">Today · done</div><h2>Nice. Today's play is done.</h2>
       <p class="small" style="opacity:.8">Up next: ${esc(itemTitle(item))} · ${itemLabel(item)}</p>
-      <div class="btnrow"><button class="btn" data-bonus>Do a bonus rep</button></div>`;
+      <div class="btnrow"><button class="btn" data-bonus>Run a bonus play</button></div>`;
   } else {
-    heroBody = `<div class="eyebrow">${resume ? "Resume today's rep" : "Today's rep"} · ${item.redo ? "Revisit" : "Session " + (item.mastery ? "∞" : dayN) + " of " + QUEUE.length}</div>
+    heroBody = `<div class="eyebrow">${resume ? "Resume today's play" : "Today's play"} · ${item.redo ? "Revisit" : "Play " + (item.mastery ? "∞" : dayN) + " of " + QUEUE.length}</div>
       <h2>${esc(itemTitle(item))}</h2>
       <div class="chips">${sks.map(k => `<span class="chip" style="--k:var(--${k});background:color-mix(in srgb,var(--${k}) 30%,transparent);color:var(--bg)">${SK[k].name}</span>`).join("")}</div>
       <div class="meta"><span>${itemLabel(item)}</span><span>~5 min</span>${dueN ? `<span>+ ${Math.min(2, dueN)} quick review${dueN > 1 ? "s" : ""}</span>` : ""}</div>
-      <button class="btn" data-start>${resume ? "Continue" : "Start"}</button>`;
+      <button class="btn" data-start>${resume ? "Continue play" : "Start play"}</button>`;
   }
   return `
   <header class="top">
@@ -548,7 +548,7 @@ function todayView() {
     <div class="row2"><h3>Field missions</h3><span class="small muted">+15 xp each</span></div>
     ${open.length ? open.map(m => { const t = T(m.id); const k = t ? t.sk : "q";
       return `<button class="mission ${m.done ? "done" : ""}" style="--k:var(--${k})" data-mission="${esc(m.key)}"><span class="box">${m.done ? "✓" : ""}</span><span><span class="txt">${esc(m.text)}</span><small>${SK[k].name} · ${esc(t ? t.t : "")}</small></span></button>`; }).join("")
-      : `<p class="small muted">Finish a Learn session to get a real-world mission to try that day.</p>`}
+      : `<p class="small muted">Finish a Learn play to get a real-world mission to try that day.</p>`}
   </section>`;
 }
 
@@ -614,15 +614,15 @@ function progressView() {
       <div class="stats"><div class="stat"><b class="mono" style="color:var(--good)">${cnt.good}</b><span>Mastered</span></div><div class="stat"><b class="mono">${cnt.ok}</b><span>Solid</span></div><div class="stat"><b class="mono" style="color:var(--bad)">${cnt.weak}</b><span>Needs work</span></div></div>
       ${weakest.length ? `<span class="eyebrow">Weakest right now</span><div>${weakest.map(id => { const k = T(id) ? T(id).sk : CH(id).sk[0];
         return `<button class="lesson" style="--k:var(--${k})" data-strength="${id}"><span class="t">${esc(itemTitle({ type: T(id) ? "learn" : "challenge", id }))}</span><span class="s">Last score ${S.mem[id].last || "–"}/5 · strength ${S.mem[id].m}%</span><span class="st"><span class="pill weak">Practise</span></span></button>`; }).join("")}</div>` : `<p class="small muted">Nothing weak right now. Weak scores show up here.</p>`}
-      <p class="small muted">Score 1–2 and it comes back tomorrow. Score 3 and it's back in a few days. Score 4–5 and it's spaced out further each time, up to months. Your daily rep mixes these in with new material.</p></section>`;
+      <p class="small muted">Score 1–2 and it comes back tomorrow. Score 3 and it's back in a few days. Score 4–5 and it's spaced out further each time, up to months. Your daily play mixes these in with new material.</p></section>`;
   })()}
   <section class="panel"><div class="row2"><h3>Path</h3><span class="small muted mono">${S.pos}/${QUEUE.length}</span></div>
     <div class="bar" style="--k:var(--accent)"><span style="width:${Math.round(S.pos / QUEUE.length * 100)}%"></span></div>
-    <p class="small muted">${left ? `${left} sessions of new material left, about ${Math.round(left / 30)} months at one a day. After that, Mastery mode cycles your spoken drills and challenges, with spaced reviews throughout.` : "Path complete. Mastery mode is on."}</p></section>
+    <p class="small muted">${left ? `${left} plays of new material left, about ${Math.round(left / 30)} months at one a day. After that, Mastery mode cycles your spoken drills and challenges, with spaced reviews throughout.` : "Path complete. Mastery mode is on."}</p></section>
   <section class="panel"><h3>Skills</h3><div class="ledger">${ORDER.map(k => { const xp = S.xp[k], L = lvl(xp);
     const lc = IX.lib.filter(l => l.sk === k && S.learned[l.id]).length;
     return `<div class="lrow" style="--k:var(--${k})"><span class="name"><i></i>${SK[k].name}</span><span class="lv"><span class="mono">L${L}</span> · ${rank(L)} · ${xp} xp</span><span class="bar"><span style="width:${lvlPct(xp)}%"></span></span><span class="small muted">${lc}/24 techniques learned · ${lvlFloor(L + 1) - xp} xp to L${L + 1}</span></div>`; }).join("")}</div></section>
-  <section class="panel"><div class="row2"><h3>Last 12 weeks</h3><span class="small muted mono">${sessions} sessions</span></div><div class="heat">${heat}</div></section>`;
+  <section class="panel"><div class="row2"><h3>Last 12 weeks</h3><span class="small muted mono">${sessions} plays</span></div><div class="heat">${heat}</div></section>`;
 }
 
 function settingsView() {
@@ -805,13 +805,13 @@ function missionStep() {
 }
 function doneStep() {
   const nx = nextItem();
-  return `<div class="eyebrow">Session complete</div>
+  return `<div class="eyebrow">Play complete</div>
     <div class="row2" style="align-items:flex-end"><span class="xpbig" style="color:var(--k)">+${sess.gained}</span><span class="streak">${flame}<b class="mono">${streak()}</b></span></div>
     <p class="muted">xp earned. ${sess.kind === "practice" ? "Practice logged." : `Next time: <b>${esc(itemTitle(nx))}</b> (${itemLabel(nx)}).`}</p>
     ${sess.score != null && S.mem[sess.item.id] ? (() => { const r = S.mem[sess.item.id], st = memStatus(sess.item.id);
       return `<div class="panel"><div class="row2"><span class="eyebrow">${esc(itemTitle(sess.item))}</span><span class="pill ${st.cls}">${st.label}</span></div>
         <div class="bar"><span style="width:${r.m}%"></span></div>
-        <p class="small muted">${r.last <= 2 ? "This one needs more reps. It'll come back tomorrow." : r.last === 3 ? `Getting there. You'll see it again in ${r.int} days.` : `Strong. Next check-in in ${r.int} days.`}</p></div>`; })() : ""}
+        <p class="small muted">${r.last <= 2 ? "This one needs more plays. It'll come back tomorrow." : r.last === 3 ? `Getting there. You'll see it again in ${r.int} days.` : `Strong. Next check-in in ${r.int} days.`}</p></div>`; })() : ""}
     <div class="confetti">${ORDER.map(k => `<i style="background:var(--${k})"></i>`).join("")}</div>
     <button class="btn wide" data-exit>Done</button>`;
 }
