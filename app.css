@@ -1,4 +1,5 @@
 /* Intersection: one narrow column, bottom tab bar; each session is a step-by-step card flow */
+[hidden]{display:none!important}
 :root{
   --bg:#F2F4F7; --surface:#FFFFFF; --ink:#151A24; --muted:#5B6474; --line:#DDE2EA; --soft:#E8ECF2;
   --accent:#232C44; --on-accent:#F2F4F7;

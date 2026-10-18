@@ -10,7 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "6";
+const APP_VERSION = "7";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -56,12 +56,67 @@ const CH = id => IX.ch.find(c => c.id === id);
 const blank = () => ({
   v: 1, xp: { q: 0, c: 0, e: 0, n: 0, s: 0 }, pos: 0, learned: {}, spoken: {}, chDone: {},
   log: {}, reviews: {}, missions: [], answers: {}, history: [], cur: null,
-  settings: { apiKey: "", rate: 1, voice: "", transcript: true }, started: null
+  settings: { apiKey: "", rate: 1, voice: "", transcript: true, ghToken: "", gistId: "", lastSync: 0 }, started: null, savedAt: 0
 });
 let S = blank();
 try { const raw = localStorage.getItem(KEY); if (raw) S = deepMerge(blank(), JSON.parse(raw)); } catch (e) {}
 function deepMerge(a, b) { for (const k in b) { if (b[k] && typeof b[k] === "object" && !Array.isArray(b[k]) && a[k] && typeof a[k] === "object") a[k] = deepMerge(a[k], b[k]); else a[k] = b[k]; } return a; }
-function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast("Couldn't save. Storage may be full."); } }
+function save() { S.savedAt = Date.now(); try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast("Couldn't save. Storage may be full."); } }
+
+/* ============ Off-phone copies ============ */
+// A shareable snapshot never includes secrets (API key, GitHub token).
+function snapshot() { return JSON.stringify(Object.assign({}, S, { settings: Object.assign({}, S.settings, { apiKey: "", ghToken: "" }) })); }
+function adopt(j) {
+  const keep = { apiKey: S.settings.apiKey, ghToken: S.settings.ghToken, gistId: S.settings.gistId, lastSync: S.settings.lastSync };
+  S = deepMerge(blank(), j);
+  Object.assign(S.settings, keep);
+  try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {}
+}
+// Cloud copy: a private GitHub Gist under the user's own account.
+const GIST_FILE = "intersection-progress.json", GIST_DESC = "Intersection app progress (auto-synced)";
+function gh(path, opts = {}) {
+  return fetch("https://api.github.com" + path, Object.assign({}, opts, { headers: Object.assign({ "Authorization": "Bearer " + S.settings.ghToken.trim(), "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" }, opts.headers || {}) }));
+}
+async function ghConnect() {
+  const me = await gh("/user"); if (!me.ok) throw new Error(me.status === 401 ? "GitHub rejected that token. Check it and try again." : "Couldn't reach GitHub (" + me.status + ").");
+  let id = "";
+  const list = await gh("/gists?per_page=100"); if (list.ok) { const gs = await list.json(); const g = gs.find(x => x.files && x.files[GIST_FILE]); if (g) id = g.id; }
+  if (!id) {
+    const r = await gh("/gists", { method: "POST", body: JSON.stringify({ description: GIST_DESC, public: false, files: { [GIST_FILE]: { content: snapshot() } } }) });
+    if (!r.ok) throw new Error(r.status === 403 || r.status === 404 ? "The token needs the 'gist' permission." : "Couldn't create the backup (" + r.status + ").");
+    id = (await r.json()).id;
+  }
+  S.settings.gistId = id; save();
+  return syncPull(true);
+}
+let syncTimer = null, syncing = false;
+function syncSoon() { if (!S.settings.ghToken || !S.settings.gistId) return; clearTimeout(syncTimer); syncTimer = setTimeout(syncPush, 1500); }
+async function syncPush() {
+  if (!S.settings.ghToken || !S.settings.gistId || syncing) return;
+  syncing = true;
+  try {
+    const r = await gh("/gists/" + S.settings.gistId, { method: "PATCH", keepalive: true, body: JSON.stringify({ files: { [GIST_FILE]: { content: snapshot() } } }) });
+    if (r.ok) { S.settings.lastSync = Date.now(); try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
+  } catch (e) {} finally { syncing = false; }
+  if (view === "settings") render();
+}
+// On open: if the cloud copy is newer (e.g. new phone or reinstall), use it; otherwise upload ours.
+async function syncPull(announce) {
+  if (!S.settings.ghToken || !S.settings.gistId) return;
+  try {
+    const r = await gh("/gists/" + S.settings.gistId, { cache: "no-store" }); if (!r.ok) return;
+    const g = await r.json(), f = g.files && g.files[GIST_FILE]; if (!f) return;
+    let content = f.content;
+    if (f.truncated && f.raw_url) content = await (await fetch(f.raw_url)).text();
+    const remote = JSON.parse(content);
+    const localFresh = !Object.keys(S.log).length && Object.keys(remote.log || {}).length > 0;
+    if (remote.xp && (localFresh || (remote.savedAt || 0) > (S.savedAt || 0))) {
+      adopt(remote); S.settings.lastSync = Date.now();
+      if (announce) toast("Progress restored from your cloud backup");
+      if (view !== "session") render();
+    } else { await syncPush(); if (announce) toast("Cloud backup connected"); }
+  } catch (e) {}
+}
 try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) {}
 
 /* ============ Helpers ============ */
@@ -312,12 +367,14 @@ function finishSession() {
   S.history.push({ d, type: it.type, id: it.id, xp: sess.gained, score: sess.score });
   if (S.history.length > 800) S.history = S.history.slice(-800);
   sess.finished = true;
+  syncSoon();
 }
 function exitSession() {
   try { speechSynthesis.cancel(); } catch (e) {}
   if (Rec.on) stopRec();
   ttsActive = false; try { player.pause(); } catch (e) {}
   if (sess && sess.finished && S.cur === sess) S.cur = null;
+  syncSoon();
   sess = null; view = "today"; save(); render(); scrollTo(0, 0);
 }
 
@@ -472,10 +529,21 @@ function settingsView() {
     <p class="small muted mono" id="soundDiag">App version ${APP_VERSION}</p>
   </section>
   <section class="panel">
-    <h3>Backup</h3>
-    <p class="small muted">Progress lives on this phone. Copy a backup now and then (paste it into Notes), and restore it if you switch phones.</p>
-    <div class="btnrow"><button class="btn soft" id="exportBtn">Copy backup</button><button class="btn ghost" id="importBtn">Restore…</button></div>
-    <textarea id="importBox" hidden placeholder="Paste a backup here, then tap Restore again"></textarea>
+    <h3>Cloud backup</h3>
+    ${st.ghToken && st.gistId ? `<p class="small"><b style="color:var(--good)">● On.</b> <span class="muted">Progress syncs to a private Gist on your GitHub account after every change, and restores automatically on a new phone. Last synced: ${st.lastSync ? new Date(st.lastSync).toLocaleString() : "not yet"}.</span></p>
+      <div class="btnrow"><button class="btn soft" id="syncNow">Sync now</button><button class="btn ghost" id="ghOff">Turn off</button></div>`
+    : `<p class="small muted">Keep a live copy of your progress in a private Gist on your GitHub account. Free, automatic, and it restores itself if you reinstall or switch phones.</p>
+      <p class="small muted">One-time setup: on GitHub, go to Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token. Tick only <b>gist</b>, set no expiration, generate, and paste it here.</p>
+      <div class="field"><label for="ghtoken">GitHub token</label><input id="ghtoken" type="password" autocomplete="off" placeholder="ghp_…"></div>
+      <button class="btn k" style="--k:var(--accent);color:var(--on-accent)" id="ghConnect">Connect</button>`}
+  </section>
+  <section class="panel">
+    <h3>Backup file</h3>
+    <p class="small muted">Save a copy to Files, iCloud Drive, Notes or email, and restore from it any time.</p>
+    <div class="btnrow"><button class="btn soft" id="shareBtn">Save backup…</button><button class="btn ghost" id="fileBtn">Restore from file</button></div>
+    <input type="file" id="fileIn" accept="application/json,.json,text/plain" hidden>
+    <div class="btnrow"><button class="link" id="exportBtn">Copy as text</button><button class="link" id="importBtn">Paste to restore</button></div>
+    <textarea id="importBox" hidden placeholder="Paste a backup here, then tap Paste to restore again"></textarea>
   </section>
   <section class="panel">
     <h3>About the content</h3>
@@ -628,7 +696,7 @@ function bind() {
     $$("[data-mission]").forEach(b => b.onclick = () => {
       const m = S.missions.find(x => x.key === b.dataset.mission); if (!m) return; const t = T(m.id), k = t ? t.sk : "q";
       if (m.done) { m.done = false; m.doneDate = null; addXP(k, -15); } else { m.done = true; m.doneDate = today(); addXP(k, 15); toast("Mission complete · +15 xp"); }
-      save(); render();
+      save(); syncSoon(); render();
     });
   }
   if (view === "library") {
@@ -654,15 +722,37 @@ function bindSettings() {
       setTimeout(() => { out.textContent = log + " · playing, at " + a.currentTime.toFixed(1) + "s after 3s, volume " + a.volume + (a.currentTime > 1 ? ". Audio IS playing. If you heard nothing, check media volume, Silent mode, or a connected Bluetooth device." : ". Audio isn't advancing."); a.pause(); }, 3000);
     }).catch(e => { out.textContent = log + " · play blocked: " + e.name; });
   };
+  const gc = $("#ghConnect"); if (gc) gc.onclick = async () => {
+    const t = $("#ghtoken").value.trim(); if (!t) { toast("Paste your GitHub token first"); return; }
+    S.settings.ghToken = t; gc.disabled = true; gc.textContent = "Connecting…";
+    try { await ghConnect(); render(); }
+    catch (e) { S.settings.ghToken = ""; S.settings.gistId = ""; save(); gc.disabled = false; gc.textContent = "Connect"; toast(e.message || "Couldn't connect"); }
+  };
+  const sn = $("#syncNow"); if (sn) sn.onclick = async () => { sn.disabled = true; await syncPull(false); await syncPush(); toast("Synced"); };
+  const go = $("#ghOff"); if (go) go.onclick = () => { S.settings.ghToken = ""; S.settings.gistId = ""; S.settings.lastSync = 0; save(); toast("Cloud backup off. Your Gist is still on GitHub."); render(); };
+  $("#shareBtn").onclick = async () => {
+    const name = "intersection-backup-" + today() + ".json";
+    const file = new File([snapshot()], name, { type: "application/json" });
+    try {
+      if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: "Intersection backup" }); return; }
+    } catch (e) { if (e && e.name === "AbortError") return; }
+    if (await copyText(snapshot())) toast("Sharing isn't available here, so the backup was copied as text instead.");
+  };
+  $("#fileBtn").onclick = () => $("#fileIn").click();
+  $("#fileIn").onchange = async e => {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    try { const j = JSON.parse(await f.text()); if (!j.xp) throw 0; adopt(j); save(); syncSoon(); toast("Progress restored"); view = "today"; render(); }
+    catch (err) { toast("That file isn't an Intersection backup."); }
+  };
   $("#exportBtn").onclick = async () => {
-    const data = JSON.stringify(Object.assign({}, S, { settings: Object.assign({}, S.settings, { apiKey: "" }) }));
+    const data = snapshot();
     if (await copyText(data)) toast("Backup copied. Paste it into Notes.");
     else { const box = $("#importBox"); box.hidden = false; box.value = data; box.select(); toast("Select all and copy the text below"); }
   };
   $("#importBtn").onclick = () => {
     const box = $("#importBox");
     if (box.hidden || !box.value.trim()) { box.hidden = false; box.value = ""; box.focus(); return; }
-    try { const j = JSON.parse(box.value); if (!j.xp) throw 0; const key = S.settings.apiKey; S = deepMerge(blank(), j); if (!S.settings.apiKey) S.settings.apiKey = key; save(); toast("Progress restored"); view = "today"; render(); }
+    try { const j = JSON.parse(box.value); if (!j.xp) throw 0; adopt(j); save(); syncSoon(); toast("Progress restored"); view = "today"; render(); }
     catch (e) { toast("That doesn't look like a backup. Paste the whole copied text."); }
   };
   $("#resetBtn").onclick = () => { $("#resetConfirm").hidden = false; };
@@ -751,4 +841,8 @@ if ("serviceWorker" in navigator) {
   // When a new version takes over, reload once so the update shows immediately (never mid-session)
   navigator.serviceWorker.addEventListener("controllerchange", () => { if (hadController && view !== "session") location.reload(); });
 }
-document.addEventListener("visibilitychange", () => { if (!document.hidden && view === "today") render(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { if (S.settings.ghToken && S.settings.gistId) syncPush(); }
+  else { if (view === "today") render(); syncPull(false); }
+});
+syncPull(false);
