@@ -10,7 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "11";
+const APP_VERSION = "12";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -66,7 +66,14 @@ function save() { S.savedAt = Date.now(); try { localStorage.setItem(KEY, JSON.s
 
 /* ============ Off-phone copies ============ */
 // A shareable snapshot never includes secrets (API key, GitHub token).
-function snapshot() { return JSON.stringify(Object.assign({}, S, { settings: Object.assign({}, S.settings, { apiKey: "", ghToken: "" }) })); }
+function nextUpInfo() {
+  try {
+    const it = nextItem(), t = it.type === "challenge" ? null : T(it.id);
+    const firstSentence = x => (String(x).match(/^.*?[.!?](\s|$)/) || [x])[0].trim();
+    return { title: itemTitle(it), skill: itemSkills(it).map(k => SK[k].name).join(" + "), label: itemLabel(it), tip: t ? firstSentence(t.idea) : firstSentence(CH(it.id).scene) };
+  } catch (e) { return null; }
+}
+function snapshot() { return JSON.stringify(Object.assign({}, S, { nextUp: nextUpInfo(), settings: Object.assign({}, S.settings, { apiKey: "", ghToken: "", vapidPrivate: "" }) })); }
 function adopt(j) {
   const keep = { apiKey: S.settings.apiKey, ghToken: S.settings.ghToken, gistId: S.settings.gistId, lastSync: S.settings.lastSync };
   S = deepMerge(blank(), j);
@@ -366,6 +373,45 @@ async function aiGrade(item, answer, spoken) {
 }
 async function copyText(t) { try { await navigator.clipboard.writeText(t); return true; } catch (e) { return false; } }
 
+/* ============ Daily notification ============ */
+// The phone subscribes to push; the subscription + chosen time go into the private gist.
+// A scheduled GitHub Action in the app's repo reads it and sends one nudge a day, skipping days you've already played.
+const PUSH_FILE = "intersection-push.json";
+const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const fromB64u = str => { const b = atob(str.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((str.length + 3) % 4)); return Uint8Array.from(b, c => c.charCodeAt(0)); };
+function pushSupported() { return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window; }
+async function writePushFile(extra) {
+  const st = S.settings;
+  const body = Object.assign({ enabled: !!st.notifOn, hour: st.notifHour ?? 9, tz: Intl.DateTimeFormat().resolvedOptions().timeZone, vapidPublic: st.vapidPublic, vapidPrivate: st.vapidPrivate, subscription: st.pushSub || null }, extra || {});
+  const r = await gh("/gists/" + st.gistId, { method: "PATCH", body: JSON.stringify({ files: { [PUSH_FILE]: { content: JSON.stringify(body) } } }) });
+  if (!r.ok) throw new Error("Couldn't save the notification setting to your cloud backup (" + r.status + ").");
+}
+async function enableNotifications() {
+  if (!pushSupported()) throw new Error("This browser doesn't support notifications. Open Intersection from its home-screen icon (iOS 16.4 or newer).");
+  if (!S.settings.ghToken || !S.settings.gistId) throw new Error("Turn on Cloud backup first. Notifications use it to know when you've played.");
+  const perm = await Notification.requestPermission();
+  if (perm !== "granted") throw new Error("Notifications are blocked. Allow them in iPhone Settings → Notifications → Intersection.");
+  const st = S.settings;
+  if (!st.vapidPublic || !st.vapidPrivate) {
+    const kp = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+    st.vapidPublic = b64u(await crypto.subtle.exportKey("raw", kp.publicKey));
+    st.vapidPrivate = (await crypto.subtle.exportKey("jwk", kp.privateKey)).d;
+  }
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (sub) { const k = sub.options && sub.options.applicationServerKey; if (k && b64u(k) !== st.vapidPublic) { await sub.unsubscribe(); sub = null; } }
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: fromB64u(st.vapidPublic) });
+  st.pushSub = sub.toJSON(); st.notifOn = true; if (st.notifHour == null) st.notifHour = 9;
+  save(); await writePushFile(); syncPush();
+}
+async function disableNotifications() {
+  S.settings.notifOn = false; save();
+  try { const reg = await navigator.serviceWorker.ready; const sub = await reg.pushManager.getSubscription(); if (sub) await sub.unsubscribe(); } catch (e) {}
+  S.settings.pushSub = null; save();
+  try { await writePushFile({ enabled: false, subscription: null }); } catch (e) {}
+}
+const fmtHour = h => (h % 12 || 12) + (h < 12 ? " am" : " pm");
+
 /* ============ Mastery model ============ */
 // Each technique/challenge has a strength (0–100) and a due date. Your grades move both:
 // weak answers come back within a day or two; strong ones get spaced further and further apart.
@@ -663,6 +709,19 @@ function settingsView() {
       <button class="btn k" style="--k:var(--accent);color:var(--on-accent)" id="ghConnect">Connect</button>`}
   </section>
   <section class="panel">
+    <h3>Daily nudge</h3>
+    ${st.notifOn ? `<p class="small"><b style="color:var(--good)">● On.</b> <span class="muted">One notification at ${fmtHour(st.notifHour ?? 9)}, only on days you haven't played yet.</span></p>
+      <div class="field"><label for="notifHour">Time</label><select id="notifHour">${Array.from({ length: 17 }, (_, i) => i + 6).map(h => `<option value="${h}" ${h === (st.notifHour ?? 9) ? "selected" : ""}>${fmtHour(h)}</option>`).join("")}</select></div>
+      <div class="btnrow"><button class="btn soft" id="notifPreview">Preview</button><button class="btn ghost" id="notifOff">Turn off</button></div>
+      <details class="small"><summary class="muted" style="cursor:pointer">One-time GitHub step (if you haven't done it)</summary>
+        <p class="muted" style="margin-top:8px">The nudge is sent by a free scheduled job in your intersection repo. Give it your backup's ID once: open <b>github.com/vivic04/intersection/settings/secrets/actions/new</b>, name it <b>GIST_ID</b>, paste the value below, then tap Add secret.</p>
+        <div class="btnrow" style="margin-top:8px"><input type="text" readonly value="${esc(st.gistId)}" id="gistIdBox" style="flex:1 1 160px"><button class="btn soft" id="copyGist">Copy</button></div>
+        <p class="muted" style="margin-top:8px">To test it: github.com/vivic04/intersection/actions → Daily nudge → Run workflow.</p></details>`
+    : `<p class="small muted">One notification a day at a time you choose, with today's play and a quick tip. It stays quiet on days you've already played. ${st.ghToken && st.gistId ? "" : "<b>Needs Cloud backup turned on first.</b>"}</p>
+      <button class="btn k" style="--k:var(--accent);color:var(--on-accent)" id="notifOn" ${st.ghToken && st.gistId ? "" : "disabled"}>Turn on daily nudge</button>`}
+    <p class="small" id="notifMsg"></p>
+  </section>
+  <section class="panel">
     <h3>Backup file</h3>
     <p class="small muted">Save a copy to Files, iCloud Drive, Notes or email, and restore from it any time.</p>
     <div class="btnrow"><button class="btn soft" id="shareBtn">Save backup…</button><button class="btn ghost" id="fileBtn">Restore from file</button></div>
@@ -872,6 +931,19 @@ function bindSettings() {
   };
   const sn = $("#syncNow"); if (sn) sn.onclick = async () => { sn.disabled = true; await syncPull(false); await syncPush(); toast("Synced"); };
   const go = $("#ghOff"); if (go) go.onclick = () => { S.settings.ghToken = ""; S.settings.gistId = ""; S.settings.lastSync = 0; save(); toast("Cloud backup off. Your Gist is still on GitHub."); render(); };
+  const no = $("#notifOn"); if (no) no.onclick = async () => {
+    no.disabled = true; no.textContent = "Turning on…";
+    try { await enableNotifications(); toast("Daily nudge on"); render(); }
+    catch (e) { no.disabled = false; no.textContent = "Turn on daily nudge"; $("#notifMsg").innerHTML = `<span style="color:var(--bad)">${esc(e.message || "Couldn't turn on notifications.")}</span>`; }
+  };
+  const nf = $("#notifOff"); if (nf) nf.onclick = async () => { await disableNotifications(); toast("Daily nudge off"); render(); };
+  const nh = $("#notifHour"); if (nh) nh.onchange = async e => { S.settings.notifHour = +e.target.value; save(); try { await writePushFile(); toast("Nudge moved to " + fmtHour(S.settings.notifHour)); } catch (err) { toast(err.message); } };
+  const np = $("#notifPreview"); if (np) np.onclick = async () => {
+    try { const reg = await navigator.serviceWorker.ready; const n = nextUpInfo() || {};
+      await reg.showNotification("Today's play: " + (n.title || "ready"), { body: n.tip || "About five minutes. Tap to start.", icon: "icons/icon-192.png", badge: "icons/icon-192.png", tag: "daily" }); }
+    catch (e) { toast("Couldn't show a preview. Check notification permission."); }
+  };
+  const cgi = $("#copyGist"); if (cgi) cgi.onclick = async () => { if (await copyText(S.settings.gistId)) toast("Copied"); else { $("#gistIdBox").select(); } };
   $("#shareBtn").onclick = async () => {
     const name = "intersection-backup-" + today() + ".json";
     const file = new File([snapshot()], name, { type: "application/json" });

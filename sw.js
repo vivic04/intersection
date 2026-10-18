@@ -1,5 +1,5 @@
 // Offline support: app shell is cached on install; everything else is cached as it's fetched.
-const CACHE = "intersection-v11";
+const CACHE = "intersection-v12";
 const SHELL = ["./", "index.html", "app.css", "app.js", "manifest.webmanifest",
   "content/core.js", "content/questions.js", "content/comms.js", "content/execution.js",
   "content/negotiation.js", "content/sales.js", "content/challenges.js",
@@ -18,4 +18,14 @@ self.addEventListener("fetch", e => {
   } else if (/fonts\.(googleapis|gstatic)\.com$/.test(url.hostname)) {
     e.respondWith(caches.match(req).then(r => r || fetch(req).then(res => { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); return res; })));
   }
+});
+
+// Daily nudge
+self.addEventListener("push", e => {
+  let d = {}; try { d = e.data ? e.data.json() : {}; } catch (err) { d = { body: e.data && e.data.text() }; }
+  e.waitUntil(self.registration.showNotification(d.title || "Today's play is ready", { body: d.body || "About five minutes. Tap to start.", icon: "icons/icon-192.png", badge: "icons/icon-192.png", tag: "daily", data: { url: d.url || "./" } }));
+});
+self.addEventListener("notificationclick", e => {
+  e.notification.close();
+  e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(cs => { for (const c of cs) { if ("focus" in c) return c.focus(); } return self.clients.openWindow((e.notification.data && e.notification.data.url) || "./"); }));
 });

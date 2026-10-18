@@ -1,0 +1,22 @@
+name: Daily nudge
+on:
+  schedule:
+    - cron: "5 * * * *"   # hourly; the script only sends at your chosen local hour
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Send a test notification now"
+        type: boolean
+        default: true
+jobs:
+  nudge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm install --no-save web-push@3.6.7
+      - run: node scripts/nudge.mjs
+        env:
+          GIST_ID: ${{ secrets.GIST_ID }}
+          FORCE: ${{ github.event.inputs.force || 'false' }}
