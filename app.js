@@ -10,7 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "9";
+const APP_VERSION = "10";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -148,11 +148,14 @@ function itemLabel(item) {
 
 /* ============ Speech (TTS) ============ */
 let voices = [];
-function loadVoices() { try { voices = speechSynthesis.getVoices().filter(v => /^en/i.test(v.lang)); } catch (e) {} }
+// iOS ships joke voices (Bells, Bubbles, Zarvox…) and low-quality "compact" voices. Keep only real English voices.
+const NOVELTY = /Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Deranged|Good News|Hysterical|Jester|Junior|Kathy|Organ|Pipe Organ|Princess|Ralph|Superstar|Trinoids|Whisper|Wobble|Zarvox|Fred|Grandma|Grandpa|Eddy|Flo|Reed|Rocko|Sandy|Shelley/i;
+function loadVoices() { try { voices = speechSynthesis.getVoices().filter(v => /^en/i.test(v.lang) && !NOVELTY.test(v.name)); } catch (e) {} }
 if ("speechSynthesis" in window) { loadVoices(); speechSynthesis.onvoiceschanged = () => { loadVoices(); if (view === "settings") render(); }; }
 function pickVoice() {
   if (!voices.length) loadVoices();
-  return voices.find(v => v.name === S.settings.voice) || voices.find(v => /Samantha|Ava|Allison|Google US English|Daniel|Karen/i.test(v.name)) || voices[0];
+  const rank = v => (/premium/i.test(v.name) ? 3 : /enhanced/i.test(v.name) ? 2 : 0) + (/en-US/i.test(v.lang) ? 1 : 0) + (/Ava|Samantha|Zoe|Evan|Nathan|Allison/i.test(v.name) ? 0.5 : 0);
+  return voices.slice().sort((a, b) => rank(b) - rank(a))[0];
 }
 // iOS: web audio is muted by the silent switch unless the audio session is "playback".
 function setAudioSession(type) { try { if (navigator.audioSession) navigator.audioSession.type = type; } catch (e) {} }
@@ -179,6 +182,7 @@ function say(text, btn) {
 const speakIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>`;
 const listenBtn = (id, label = "Listen") => `<button class="speakbtn" data-say="${id}" data-label="${label}">${speakIcon}<span class="t mono">${label}</span></button>`;
 const sayTexts = {}, sayClips = {};
+const NARRATORS = { heart: { name: "Heart · warm, female", dir: "" }, michael: { name: "Michael · calm, male", dir: "m" } };
 // Pre-recorded narration (audio/<key>.mp3). Plays through Silent mode; falls back to the device voice if a clip is missing.
 const player = new Audio(); player.preload = "none";
 let playerBtn = null;
@@ -191,9 +195,14 @@ function playClip(key, text, btn) {
   if (playerBtn === btn && !player.paused) { player.pause(); return; }
   setAudioSession("playback");
   clearPlaying();
-  player.onerror = () => { clearPlaying(); say(text, btn); };
-  player.src = "audio/" + key + ".mp3";
-  player.playbackRate = S.settings.rate || 1;
+  const nar = NARRATORS[S.settings.narrator] || NARRATORS.heart;
+  let triedDefault = !nar.dir;
+  player.onerror = () => {
+    if (!triedDefault) { triedDefault = true; player.src = "audio/" + key + ".mp3"; player.play().catch(() => {}); return; }
+    clearPlaying(); say(text, btn);
+  };
+  player.src = "audio/" + (nar.dir ? nar.dir + "/" : "") + key + ".mp3";
+  player.defaultPlaybackRate = player.playbackRate = S.settings.rate || 1;
   playerBtn = btn; if (btn) btn.classList.add("on");
   const p = player.play();
   if (p && p.catch) p.catch(err => { if (err && err.name === "NotAllowedError") { clearPlaying(); toast("Tap Listen again to play."); } });
@@ -636,10 +645,11 @@ function settingsView() {
   </section>
   <section class="panel">
     <h3>Voice</h3>
-    <div class="field"><label for="voice">Reading voice</label><select id="voice"><option value="">Automatic</option>${voices.map(v => `<option ${v.name === st.voice ? "selected" : ""}>${esc(v.name)}</option>`).join("")}</select></div>
+    <div class="field"><label for="narrator">Narrator</label><select id="narrator">${Object.entries(NARRATORS).map(([k, n]) => `<option value="${k}" ${k === (st.narrator || "heart") ? "selected" : ""}>${n.name}</option>`).join("")}</select></div>
+    <button class="btn soft" id="previewVoice">▶ Preview narrator</button>
     <div class="field"><label for="rate">Reading speed: <span class="mono" id="rateVal">${st.rate}×</span></label><input id="rate" type="range" min="0.7" max="1.3" step="0.05" value="${st.rate}"></div>
     <div class="toggle"><label for="trans">Live transcript while recording</label><input id="trans" type="checkbox" ${st.transcript ? "checked" : ""}></div>
-    <p class="small muted">If recording misbehaves on your phone, turn the live transcript off. You can still type or dictate what you said afterwards. Tip: download an Enhanced voice in iPhone Settings → Accessibility → Spoken Content → Voices for much more natural reading.</p>
+    <p class="small muted">If recording misbehaves on your phone, turn the live transcript off. You can still type or dictate what you said afterwards. Lessons and scenarios are pre-recorded. If a recording isn't available yet, your iPhone's best installed voice reads it instead; for a more natural one, download an Enhanced voice in iPhone Settings → Accessibility → Spoken Content → Voices.</p>
     <button class="btn ghost" id="testVoice">Sound check</button>
     <p class="small muted mono" id="soundDiag">App version ${APP_VERSION}</p>
   </section>
@@ -841,8 +851,9 @@ function bindSettings() {
     catch (e) { msg.innerHTML = `<b style="color:var(--bad)">Didn't work.</b> ${esc(e.message)}`; }
     tk.disabled = false;
   };
-  $("#voice").onchange = e => { S.settings.voice = e.target.value; save(); };
-  $("#rate").oninput = e => { S.settings.rate = +e.target.value; $("#rateVal").textContent = S.settings.rate + "×"; save(); };
+  $("#narrator").onchange = e => { S.settings.narrator = e.target.value; save(); playClip("q1_learn", "", $("#previewVoice")); };
+  $("#previewVoice").onclick = e => playClip("q1_learn", "Here's how lessons will sound.", e.currentTarget);
+  $("#rate").oninput = e => { S.settings.rate = +e.target.value; $("#rateVal").textContent = S.settings.rate + "×"; player.playbackRate = S.settings.rate; save(); };
   $("#trans").onchange = e => { S.settings.transcript = e.target.checked; save(); };
   $("#testVoice").onclick = () => {
     const out = $("#soundDiag"); const a = new Audio("audio/q1_learn.mp3"); setAudioSession("playback");
