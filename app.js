@@ -10,7 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "15";
+const APP_VERSION = "16";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -56,7 +56,7 @@ const CH = id => IX.ch.find(c => c.id === id);
 const blank = () => ({
   v: 1, xp: { q: 0, c: 0, e: 0, n: 0, s: 0 }, pos: 0, learned: {}, spoken: {}, chDone: {},
   log: {}, reviews: {}, missions: [], answers: {}, history: [], cur: null,
-  mem: {}, lastMain: "new", redoRun: 0,
+  mem: {}, lastMain: "new", redoRun: 0, xpDev: {},
   settings: { apiKey: "", provider: "anthropic", model: "", gradeApp: "claude", rate: 1, voice: "", transcript: true, ghToken: "", gistId: "", lastSync: 0 }, started: null, savedAt: 0
 });
 let S = blank();
@@ -78,8 +78,46 @@ function adopt(j) {
   const keep = { apiKey: S.settings.apiKey, ghToken: S.settings.ghToken, gistId: S.settings.gistId, lastSync: S.settings.lastSync };
   S = deepMerge(blank(), j);
   Object.assign(S.settings, keep);
+  if (typeof initLedger === "function" && typeof DEVICE !== "undefined") initLedger();
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {}
 }
+/* ---- Multi-device: each device keeps its own XP ledger so merging never double-counts ---- */
+const DEV_KEY = "intersection.device";
+let DEVICE = ""; try { DEVICE = localStorage.getItem(DEV_KEY) || ""; if (!DEVICE) { DEVICE = "d" + Math.random().toString(36).slice(2, 10); localStorage.setItem(DEV_KEY, DEVICE); } } catch (e) { DEVICE = "d0"; }
+function sumXP() { const t = { q: 0, c: 0, e: 0, n: 0, s: 0 }; for (const d of Object.values(S.xpDev || {})) for (const k in t) t[k] += d[k] || 0; S.xp = t; }
+function initLedger() {
+  S.xpDev = S.xpDev || {};
+  if (!Object.keys(S.xpDev).length && Object.values(S.xp).some(v => v)) S.xpDev[DEVICE] = Object.assign({}, S.xp);
+  S.xpDev[DEVICE] = S.xpDev[DEVICE] || { q: 0, c: 0, e: 0, n: 0, s: 0 };
+  sumXP();
+}
+initLedger();
+// Merge another device's progress into this one: union of history, latest of each record, never losing plays.
+function mergeStates(L, R) {
+  const maxDate = (a, b) => (!a ? b : !b ? a : a > b ? a : b);
+  const M = JSON.parse(JSON.stringify(L));
+  for (const [d, n] of Object.entries(R.log || {})) M.log[d] = Math.max(M.log[d] || 0, n);
+  for (const f of ["learned", "spoken", "chDone"]) { M[f] = M[f] || {}; for (const [k, v] of Object.entries(R[f] || {})) M[f][k] = maxDate(M[f][k], v); }
+  const better = (a, b) => (!a ? b : !b ? a : ((b.n || 0) > (a.n || 0) || ((b.n || 0) === (a.n || 0) && (b.at || b.due || "") > (a.at || a.due || ""))) ? b : a);
+  for (const f of ["mem", "reviews"]) { M[f] = M[f] || {}; for (const [k, v] of Object.entries(R[f] || {})) M[f][k] = better(M[f][k], v); }
+  M.answers = Object.assign({}, R.answers || {}, M.answers || {});
+  const ms = new Map((M.missions || []).map(m => [m.key, m]));
+  for (const m of R.missions || []) { const a = ms.get(m.key); if (!a || (m.done && !a.done)) ms.set(m.key, m); }
+  M.missions = [...ms.values()].sort((a, b) => (a.key > b.key ? 1 : -1)).slice(-60);
+  const hk = h => [h.d, h.type, h.id, h.xp, h.score, h.kind].join("|");
+  const hs = new Map((M.history || []).map(h => [hk(h), h])); for (const h of R.history || []) if (!hs.has(hk(h))) hs.set(hk(h), h);
+  M.history = [...hs.values()].sort((a, b) => (a.d > b.d ? 1 : a.d < b.d ? -1 : 0)).slice(-800);
+  M.xpDev = M.xpDev || {};
+  for (const [dev, x] of Object.entries(R.xpDev || {})) { if (dev === DEVICE) continue; const a = M.xpDev[dev] || {}; M.xpDev[dev] = {}; for (const k of ORDER) M.xpDev[dev][k] = Math.max(a[k] || 0, x[k] || 0); }
+  // A pre-multi-device backup is someone's ledger without a name. If any named ledger already covers it, it's the same XP: drop it.
+  if (M.xpDev.legacy) { const lg = M.xpDev.legacy; if (Object.entries(M.xpDev).some(([d, x]) => d !== "legacy" && ORDER.every(k => (x[k] || 0) >= (lg[k] || 0)))) delete M.xpDev.legacy; }
+  M.pos = Math.max(M.pos || 0, R.pos || 0);
+  if (!M.started || (R.started && R.started < M.started)) M.started = R.started;
+  if ((R.savedAt || 0) > (M.savedAt || 0)) { M.lastMain = R.lastMain; M.redoRun = R.redoRun; }
+  M.savedAt = Math.max(M.savedAt || 0, R.savedAt || 0);
+  return M;
+}
+
 // Cloud copy: a private GitHub Gist under the user's own account.
 const GIST_FILE = "intersection-progress.json", GIST_DESC = "Intersection app progress (auto-synced)";
 function gh(path, opts = {}) {
@@ -117,12 +155,21 @@ async function syncPull(announce) {
     let content = f.content;
     if (f.truncated && f.raw_url) content = await (await fetch(f.raw_url)).text();
     const remote = JSON.parse(content);
-    const localFresh = !Object.keys(S.log).length && Object.keys(remote.log || {}).length > 0;
-    if (remote.xp && (localFresh || (remote.savedAt || 0) > (S.savedAt || 0))) {
-      adopt(remote); S.settings.lastSync = Date.now();
-      if (announce) toast("Progress restored from your cloud backup");
-      if (view !== "session") render();
-    } else { await syncPush(); if (announce) toast("Cloud backup connected"); }
+    if (!remote.xp) { await syncPush(); return; }
+    // Older backups (before multi-device) have no XP ledger: treat their XP as one other device.
+    if (!remote.xpDev || !Object.keys(remote.xpDev).length) remote.xpDev = { legacy: remote.xp };
+    const before = JSON.stringify([S.log, S.pos, S.xpDev, Object.keys(S.mem).length]);
+    const keepSettings = S.settings, keepCur = S.cur, keepTree = S.treeSeen;
+    const hadLocal = Object.keys(S.log).length > 0;
+    let merged = mergeStates(S, remote);
+    S = deepMerge(blank(), merged); S.settings = keepSettings; S.cur = keepCur; S.treeSeen = keepTree;
+    initLedger();
+    S.settings.lastSync = Date.now();
+    try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {}
+    const changed = before !== JSON.stringify([S.log, S.pos, S.xpDev, Object.keys(S.mem).length]);
+    if (changed && view !== "session") render();
+    await syncPush();
+    if (announce) toast(changed ? "Synced with your other devices" : "Cloud backup connected");
   } catch (e) {}
 }
 try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) {}
@@ -142,7 +189,7 @@ function lvlPct(xp) { const L = lvl(xp), a = lvlFloor(L), b = lvlFloor(L + 1); r
 function streak() { let d = today(), n = 0; if (!S.log[d]) d = addDays(d, -1); while (S.log[d]) { n++; d = addDays(d, -1); } return n; }
 function bestStreak() { const ks = Object.keys(S.log).sort(); let best = 0, run = 0, prev = null; for (const k of ks) { run = prev && addDays(prev, 1) === k ? run + 1 : 1; best = Math.max(best, run); prev = k; } return best; }
 function toast(t) { const el = $("#toast"); el.textContent = t; el.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => el.hidden = true, 2600); }
-function addXP(sks, n) { const list = Array.isArray(sks) ? sks : [sks]; const each = Math.round(n / list.length); list.forEach(k => S.xp[k] = Math.max(0, (S.xp[k] || 0) + each)); return n; }
+function addXP(sks, n) { const list = Array.isArray(sks) ? sks : [sks]; const each = Math.round(n / list.length); const mine = S.xpDev[DEVICE]; list.forEach(k => mine[k] = Math.max(0, (mine[k] || 0) + each)); sumXP(); return n; }
 function seeded(seed) { let x = Math.abs(seed) % 2147483647 || 7; return () => (x = x * 16807 % 2147483647) / 2147483647; }
 function hash(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) | 0; return h; }
 function itemSkills(item) { return item.type === "challenge" ? CH(item.id).sk : [T(item.id).sk]; }
@@ -528,6 +575,7 @@ function stepsFor(item) {
   return ["scene", "record", "grade"];
 }
 function startSession(kind, item) {
+  if (S.settings.ghToken && S.settings.gistId && Date.now() - (S.settings.lastSync || 0) > 60000) syncPull(false);
   if (Rec.url) { URL.revokeObjectURL(Rec.url); Rec.url = null; }
   if (kind !== "practice" && S.cur && !S.cur.finished && S.cur.date === today()) { sess = S.cur; }
   else { sess = newSession(kind, item || nextItem()); if (kind !== "practice") S.cur = sess; }
@@ -739,6 +787,20 @@ function settingsView() {
   const st = S.settings;
   return `<header><h1>Settings</h1></header>
   <section class="panel">
+    <h3>Your account &amp; devices</h3>
+    ${st.ghToken && st.gistId ? `<p class="small"><b style="color:var(--good)">● Synced.</b> <span class="muted">Your progress lives in a private Gist on your GitHub account and merges across every device you link: phone, iPad, laptop. Last synced: ${st.lastSync ? new Date(st.lastSync).toLocaleString() : "not yet"}.</span></p>
+      <div class="btnrow"><button class="btn soft" id="syncNow">Sync now</button><button class="btn ghost" id="linkDev">Link another device</button></div>
+      <div id="linkBox" hidden class="model"><span class="eyebrow">Link code</span><p class="small muted">On your other device: open Intersection → Settings → "Have a link code?" and paste this. It contains your GitHub token, so only send it to yourself (AirDrop, Notes, or a message to yourself).</p>
+        <div class="btnrow"><input type="text" readonly id="linkCode" value="${esc(btoa(JSON.stringify({ t: st.ghToken, g: st.gistId })))}" style="flex:1 1 160px"><button class="btn soft" id="copyLink">Copy</button></div></div>
+      <button class="link small" id="ghOff">Disconnect this device</button>`
+    : `<p class="small muted">Keep a live copy of your progress in a private Gist on your GitHub account. Free, automatic, and it restores itself if you reinstall or switch phones.</p>
+      <p class="small muted">One-time setup: on GitHub, go to Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token. Tick only <b>gist</b>, set no expiration, generate, and paste it here.</p>
+      <div class="field"><label for="ghtoken">GitHub token</label><input id="ghtoken" type="password" autocomplete="off" placeholder="ghp_…"></div>
+      <button class="btn k" style="--k:var(--accent);color:var(--on-accent)" id="ghConnect">Connect</button>
+      <div class="field" style="margin-top:6px"><label for="linkIn">Have a link code from another device?</label><input id="linkIn" type="text" autocomplete="off" placeholder="Paste link code"></div>
+      <button class="btn soft" id="linkUse">Link this device</button>`}
+  </section>
+  <section class="panel">
     <h3>Grading app</h3>
     <p class="small muted">Free option: the grade button opens this app with your answer, the rubric and the model answer filled in (or copied, ready to paste), using the subscription you already have.</p>
     <div class="field"><label for="gradeApp">Open grading in</label><select id="gradeApp">${Object.entries(GRADE_APPS).map(([k, a]) => `<option value="${k}" ${k === (st.gradeApp || "claude") ? "selected" : ""}>${a.name}${a.paste ? " (paste the copied prompt)" : ""}</option>`).join("")}</select></div>
@@ -762,15 +824,6 @@ function settingsView() {
     <p class="small muted">If recording misbehaves on your phone, turn the live transcript off. You can still type or dictate what you said afterwards. Lessons and scenarios are pre-recorded. If a recording isn't available yet, your iPhone's best installed voice reads it instead; for a more natural one, download an Enhanced voice in iPhone Settings → Accessibility → Spoken Content → Voices.</p>
     <button class="btn ghost" id="testVoice">Sound check</button>
     <p class="small muted mono" id="soundDiag">App version ${APP_VERSION}</p>
-  </section>
-  <section class="panel">
-    <h3>Cloud backup</h3>
-    ${st.ghToken && st.gistId ? `<p class="small"><b style="color:var(--good)">● On.</b> <span class="muted">Progress syncs to a private Gist on your GitHub account after every change, and restores automatically on a new phone. Last synced: ${st.lastSync ? new Date(st.lastSync).toLocaleString() : "not yet"}.</span></p>
-      <div class="btnrow"><button class="btn soft" id="syncNow">Sync now</button><button class="btn ghost" id="ghOff">Turn off</button></div>`
-    : `<p class="small muted">Keep a live copy of your progress in a private Gist on your GitHub account. Free, automatic, and it restores itself if you reinstall or switch phones.</p>
-      <p class="small muted">One-time setup: on GitHub, go to Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token. Tick only <b>gist</b>, set no expiration, generate, and paste it here.</p>
-      <div class="field"><label for="ghtoken">GitHub token</label><input id="ghtoken" type="password" autocomplete="off" placeholder="ghp_…"></div>
-      <button class="btn k" style="--k:var(--accent);color:var(--on-accent)" id="ghConnect">Connect</button>`}
   </section>
   <section class="panel">
     <h3>Daily nudge</h3>
@@ -1001,6 +1054,15 @@ function bindSettings() {
     try { await ghConnect(); render(); }
     catch (e) { S.settings.ghToken = ""; S.settings.gistId = ""; save(); gc.disabled = false; gc.textContent = "Connect"; toast(e.message || "Couldn't connect"); }
   };
+  const ld = $("#linkDev"); if (ld) ld.onclick = () => { $("#linkBox").hidden = !$("#linkBox").hidden; };
+  const cl = $("#copyLink"); if (cl) cl.onclick = async () => { if (await copyText($("#linkCode").value)) toast("Link code copied"); else $("#linkCode").select(); };
+  const lu = $("#linkUse"); if (lu) lu.onclick = async () => {
+    let j; try { j = JSON.parse(atob($("#linkIn").value.trim())); } catch (e) {}
+    if (!j || !j.t || !j.g) { toast("That doesn't look like a link code. Copy the whole code again."); return; }
+    S.settings.ghToken = j.t; S.settings.gistId = j.g; lu.disabled = true; lu.textContent = "Linking…";
+    try { const me = await gh("/user"); if (!me.ok) throw new Error("GitHub rejected the token in that code."); await syncPull(true); render(); }
+    catch (e) { S.settings.ghToken = ""; S.settings.gistId = ""; save(); lu.disabled = false; lu.textContent = "Link this device"; toast(e.message || "Couldn't link"); }
+  };
   const sn = $("#syncNow"); if (sn) sn.onclick = async () => { sn.disabled = true; await syncPull(false); await syncPush(); toast("Synced"); };
   const go = $("#ghOff"); if (go) go.onclick = () => { S.settings.ghToken = ""; S.settings.gistId = ""; S.settings.lastSync = 0; save(); toast("Cloud backup off. Your Gist is still on GitHub."); render(); };
   const no = $("#notifOn"); if (no) no.onclick = async () => {
@@ -1043,7 +1105,7 @@ function bindSettings() {
   };
   $("#resetBtn").onclick = () => { $("#resetConfirm").hidden = false; };
   $("#resetNo").onclick = () => { $("#resetConfirm").hidden = true; };
-  $("#resetYes").onclick = () => { const st = S.settings; S = blank(); S.settings = st; save(); toast("Progress reset"); view = "today"; render(); };
+  $("#resetYes").onclick = () => { const st = S.settings; S = blank(); S.settings = st; initLedger(); save(); toast("Progress reset"); view = "today"; render(); };
 }
 function award(sks, n) { sess.gained += addXP(sks, n); }
 function bindSession() {
