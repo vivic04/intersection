@@ -10,7 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "17";
+const APP_VERSION = "18";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -393,10 +393,10 @@ async function genFresh() {
   if (freshBusy || !sess) return; freshBusy = true;
   const s0 = sess, t = T(s0.item.id);
   const used = [t.scene].concat((IX.vars[t.id] || []).map(v => v[0])).concat(s0.prevFresh || []);
-  const settings = ["a job interview", "a family or friendship situation", "a side business with clients", "a meeting with senior leaders", "a peer at work", "a landlord, vendor or service provider", "a networking event", "a team you lead"];
+  const settings = ["a job interview", "a family or friendship situation", "a side project or app you're building", "a meeting with senior leaders", "a peer at work", "a landlord, vendor or service provider", "a networking event", "a team you lead"];
   const where = settings[(hash(t.id + today()) >>> 0) % settings.length];
   const prompt = `Write one short, realistic practice scenario for the communication technique "${t.t}" (${t.src}). Core idea: ${t.idea}
-Setting: ${where}. The person practising is a young professional in Toronto who works in AI strategy at a bank and runs a small career-coaching business.
+Setting: ${where}. The person practising is a young professional in Toronto who works in AI strategy at a bank and is working toward an AI product management role.
 It must be clearly different from these: ${used.join(" | ")}
 Reply with only JSON: {"scene": "1–2 sentences, second person, concrete details", "ask": "one sentence telling them what to say out loud"}`;
   try {
