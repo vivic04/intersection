@@ -253,3 +253,14 @@ body.insession .tabs{display:none}
   .tabs button:hover{color:var(--ink)}
 }
 .lrow,.lesson{transition:background .15s}
+
+.mission{transition:opacity .35s ease, transform .35s ease, max-height .35s ease}
+.mission.leaving{opacity:0;transform:translateX(24px)}
+.mission .box{transition:background .2s}
+.mission.leaving .box{background:var(--k)}
+.logrow{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:start;padding:10px 0;border-bottom:1px solid var(--line)}
+.logrow:last-child{border-bottom:none}
+.logrow .box{width:20px;height:20px;border-radius:6px;background:var(--k);color:var(--surface);display:grid;place-items:center;font-size:12px;font-weight:800;margin-top:2px}
+.logrow small{display:block;color:var(--muted);font-size:.78rem;margin-top:2px}
+.toast .undo{background:none;border:none;color:inherit;font-weight:800;text-decoration:underline;text-underline-offset:3px;padding:0 0 0 6px}
+@media (prefers-reduced-motion: reduce){.mission{transition:none}}

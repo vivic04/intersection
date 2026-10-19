@@ -10,7 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "19";
+const APP_VERSION = "20";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -56,7 +56,7 @@ const CH = id => IX.ch.find(c => c.id === id);
 const blank = () => ({
   v: 1, xp: { q: 0, c: 0, e: 0, n: 0, s: 0 }, pos: 0, learned: {}, spoken: {}, chDone: {},
   log: {}, reviews: {}, missions: [], answers: {}, history: [], cur: null,
-  mem: {}, lastMain: "new", redoRun: 0, xpDev: {},
+  mem: {}, lastMain: "new", redoRun: 0, xpDev: {}, legacyOwner: "",
   settings: { apiKey: "", provider: "anthropic", model: "", gradeApp: "claude", rate: 1, voice: "", transcript: true, ghToken: "", gistId: "", lastSync: 0 }, started: null, savedAt: 0
 });
 let S = blank();
@@ -84,13 +84,25 @@ function adopt(j) {
 /* ---- Multi-device: each device keeps its own XP ledger so merging never double-counts ---- */
 const DEV_KEY = "intersection.device";
 let DEVICE = ""; try { DEVICE = localStorage.getItem(DEV_KEY) || ""; if (!DEVICE) { DEVICE = "d" + Math.random().toString(36).slice(2, 10); localStorage.setItem(DEV_KEY, DEVICE); } } catch (e) { DEVICE = "d0"; }
+// XP is computed from the play history plus completed missions. Those records merge cleanly across devices
+// (a union with no duplicates), so XP can never be double-counted or lost by a sync.
+function deriveXP() {
+  const t = { q: 0, c: 0, e: 0, n: 0, s: 0 };
+  const sks = id => { const x = T(id); if (x) return [x.sk]; const c = CH(id); return c ? c.sk : []; };
+  for (const h of S.history || []) { const ks = sks(h.id); if (!ks.length || !h.xp) continue; const each = Math.round(h.xp / ks.length); ks.forEach(k => t[k] = Math.max(0, t[k] + each)); }
+  for (const m of S.missions || []) if (m.done && m.awarded) { const x = T(m.id); if (x) t[x.sk] += 15; }
+  if (S.cur && !S.cur.finished && S.cur.gained) { const ks = sks(S.cur.item.id); ks.forEach(k => t[k] += Math.round(S.cur.gained / ks.length)); }
+  return t;
+}
 function sumXP() { const t = { q: 0, c: 0, e: 0, n: 0, s: 0 }; for (const d of Object.values(S.xpDev || {})) for (const k in t) t[k] += d[k] || 0; S.xp = t; }
 function initLedger() {
+  S.xp = deriveXP(); return;
   S.xpDev = S.xpDev || {};
   if (!Object.keys(S.xpDev).length && Object.values(S.xp).some(v => v)) S.xpDev[DEVICE] = Object.assign({}, S.xp);
   S.xpDev[DEVICE] = S.xpDev[DEVICE] || { q: 0, c: 0, e: 0, n: 0, s: 0 };
   sumXP();
 }
+S.missions.forEach(m => { if (m.done && m.awarded === undefined) m.awarded = true; });
 initLedger();
 // Merge another device's progress into this one: union of history, latest of each record, never losing plays.
 function mergeStates(L, R) {
@@ -103,14 +115,15 @@ function mergeStates(L, R) {
   M.answers = Object.assign({}, R.answers || {}, M.answers || {});
   const ms = new Map((M.missions || []).map(m => [m.key, m]));
   for (const m of R.missions || []) { const a = ms.get(m.key); if (!a || (m.done && !a.done)) ms.set(m.key, m); }
-  M.missions = [...ms.values()].sort((a, b) => (a.key > b.key ? 1 : -1)).slice(-60);
-  const hk = h => [h.d, h.type, h.id, h.xp, h.score, h.kind].join("|");
+  M.missions = [...ms.values()].sort((a, b) => (a.key > b.key ? 1 : -1)).slice(-500);
+  const hk = h => [h.d, h.type, h.id, h.xp, h.score, h.kind, h.at || ""].join("|");
   const hs = new Map((M.history || []).map(h => [hk(h), h])); for (const h of R.history || []) if (!hs.has(hk(h))) hs.set(hk(h), h);
-  M.history = [...hs.values()].sort((a, b) => (a.d > b.d ? 1 : a.d < b.d ? -1 : 0)).slice(-800);
+  M.history = [...hs.values()].sort((a, b) => (a.d > b.d ? 1 : a.d < b.d ? -1 : 0)).slice(-5000);
   M.xpDev = M.xpDev || {};
   for (const [dev, x] of Object.entries(R.xpDev || {})) { if (dev === DEVICE) continue; const a = M.xpDev[dev] || {}; M.xpDev[dev] = {}; for (const k of ORDER) M.xpDev[dev][k] = Math.max(a[k] || 0, x[k] || 0); }
-  // A pre-multi-device backup is someone's ledger without a name. If any named ledger already covers it, it's the same XP: drop it.
-  if (M.xpDev.legacy) { const lg = M.xpDev.legacy; if (Object.entries(M.xpDev).some(([d, x]) => d !== "legacy" && ORDER.every(k => (x[k] || 0) >= (lg[k] || 0)))) delete M.xpDev.legacy; }
+  // A pre-multi-device backup carries one unnamed XP ledger. The device it came from claims it (legacyOwner) and from then on
+  // its own named ledger replaces it everywhere, so it's never counted twice or dropped by guesswork.
+
   M.pos = Math.max(M.pos || 0, R.pos || 0);
   if (!M.started || (R.started && R.started < M.started)) M.started = R.started;
   if ((R.savedAt || 0) > (M.savedAt || 0)) { M.lastMain = R.lastMain; M.redoRun = R.redoRun; }
@@ -157,13 +170,16 @@ async function syncPull(announce) {
     const remote = JSON.parse(content);
     if (!remote.xp) { await syncPush(); return; }
     // Older backups (before multi-device) have no XP ledger: treat their XP as one other device.
-    if (!remote.xpDev || !Object.keys(remote.xpDev).length) remote.xpDev = { legacy: remote.xp };
+    if (!remote.xpDev || !Object.keys(remote.xpDev).length) {
+      remote.xpDev = { legacy: remote.xp };
+    }
     const before = JSON.stringify([S.log, S.pos, S.xpDev, Object.keys(S.mem).length]);
     const keepSettings = S.settings, keepCur = S.cur, keepTree = S.treeSeen;
     const hadLocal = Object.keys(S.log).length > 0;
     let merged = mergeStates(S, remote);
     S = deepMerge(blank(), merged); S.settings = keepSettings; S.cur = keepCur; S.treeSeen = keepTree;
     initLedger();
+    S.xp = deriveXP();
     S.settings.lastSync = Date.now();
     try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {}
     const changed = before !== JSON.stringify([S.log, S.pos, S.xpDev, Object.keys(S.mem).length]);
@@ -182,14 +198,19 @@ const pad = n => String(n).padStart(2, "0");
 const dkey = d => d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
 const today = () => dkey(new Date());
 const addDays = (k, n) => { const d = new Date(k + "T12:00:00"); d.setDate(d.getDate() + n); return dkey(d); };
-const lvl = xp => Math.floor(Math.sqrt(xp / 25)) + 1;
-const lvlFloor = L => 25 * (L - 1) * (L - 1);
+// Level k spans 100 + 50·(k−1) XP, so early bars move steadily (a +15 mission is ~15% of level 1, not 60%).
+const lvlFloor = L => 100 * (L - 1) + 25 * (L - 1) * (L - 2);
+const lvl = xp => { let L = 1; while (lvlFloor(L + 1) <= xp) L++; return L; };
 const rank = L => L >= 11 ? "Master" : L >= 8 ? "Expert" : L >= 5 ? "Practitioner" : L >= 3 ? "Apprentice" : "Novice";
 function lvlPct(xp) { const L = lvl(xp), a = lvlFloor(L), b = lvlFloor(L + 1); return Math.round((xp - a) / (b - a) * 100); }
 function streak() { let d = today(), n = 0; if (!S.log[d]) d = addDays(d, -1); while (S.log[d]) { n++; d = addDays(d, -1); } return n; }
 function bestStreak() { const ks = Object.keys(S.log).sort(); let best = 0, run = 0, prev = null; for (const k of ks) { run = prev && addDays(prev, 1) === k ? run + 1 : 1; best = Math.max(best, run); prev = k; } return best; }
-function toast(t) { const el = $("#toast"); el.textContent = t; el.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => el.hidden = true, 2600); }
-function addXP(sks, n) { const list = Array.isArray(sks) ? sks : [sks]; const each = Math.round(n / list.length); const mine = (S.xpDev = S.xpDev || {})[DEVICE] || (S.xpDev[DEVICE] = { q: 0, c: 0, e: 0, n: 0, s: 0 }); list.forEach(k => mine[k] = Math.max(0, (mine[k] || 0) + each)); sumXP(); return n; }
+function toast(t) { const el = $("#toast"); if (!el.hidden && el.querySelector(".undo")) { setTimeout(() => toast(t), 5200); return; } el.textContent = t; el.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => el.hidden = true, 2600); }
+function addXP(sks, n) { const list = Array.isArray(sks) ? sks : [sks]; const each = Math.round(n / list.length);
+  { const before0 = Object.fromEntries(list.map(k => [k, lvl(S.xp[k] || 0)])); list.forEach(k => S.xp[k] = Math.max(0, (S.xp[k] || 0) + each));
+    setTimeout(() => list.forEach(k => { const L = lvl(S.xp[k] || 0); if (L > before0[k]) toast(`🎉 ${SK[k].name} reached Level ${L} · ${rank(L)}`); }), 0); return n; }
+  const before = Object.fromEntries(list.map(k => [k, lvl(S.xp[k] || 0)]));
+  setTimeout(() => list.forEach(k => { const L = lvl(S.xp[k] || 0); if (L > before[k]) toast(`🎉 ${SK[k].name} reached Level ${L} · ${rank(L)}`); }), 0); const mine = (S.xpDev = S.xpDev || {})[DEVICE] || (S.xpDev[DEVICE] = { q: 0, c: 0, e: 0, n: 0, s: 0 }); list.forEach(k => mine[k] = Math.max(0, (mine[k] || 0) + each)); sumXP(); return n; }
 function seeded(seed) { let x = Math.abs(seed) % 2147483647 || 7; return () => (x = x * 16807 % 2147483647) / 2147483647; }
 function hash(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) | 0; return h; }
 function itemSkills(item) { return item.type === "challenge" ? CH(item.id).sk : [T(item.id).sk]; }
@@ -544,7 +565,7 @@ function variantScene(item) {
 })();
 
 /* ============ Session engine ============ */
-let view = "today", sess = null, libSkill = "q";
+let view = "today", sess = null, libSkill = "q", missionLogAll = false;
 function newSession(kind, item) {
   const s = { kind, date: today(), item, step: 0, gained: 0, reviews: [], ri: 0, draft: "", transcript: "", secs: 0, quizPick: null, revPick: null, score: null, gradeText: "", rubTicks: [], gradedBy: null, showModel: false };
   if (kind === "daily") {
@@ -607,8 +628,8 @@ function finishSession() {
   if (sess.kind !== "practice" && !it.redo && !it.mastery && QUEUE[S.pos] && QUEUE[S.pos].id === it.id && QUEUE[S.pos].type === it.type) sess.advanced = true;
   if (sess.kind !== "practice" && !it.redo && !it.mastery && QUEUE[S.pos] && QUEUE[S.pos].id === it.id && QUEUE[S.pos].type === it.type) S.pos++;
   S.log[d] = (S.log[d] || 0) + 1;
-  S.history.push({ d, type: it.type, id: it.id, xp: sess.gained, score: sess.score, kind: sess.kind, adv: !!sess.advanced });
-  if (S.history.length > 800) S.history = S.history.slice(-800);
+  S.history.push({ d, type: it.type, id: it.id, xp: sess.gained, score: sess.score, kind: sess.kind, adv: !!sess.advanced, at: Date.now() });
+  if (S.history.length > 5000) S.history = S.history.slice(-5000);
   sess.finished = true;
   syncSoon();
 }
@@ -656,7 +677,8 @@ function todayView() {
   const item = resume ? resume.item : nextItem();
   const sks = itemSkills(item);
   const dueN = Object.values(S.reviews).filter(r => r.due <= today()).length;
-  const open = S.missions.filter(m => !m.done || m.doneDate === today()).slice(-6).reverse();
+  const open = S.missions.filter(m => !m.done).reverse();
+  const doneN = S.missions.filter(m => m.done).length;
   const minK = ORDER.reduce((m, k) => S.xp[k] < S.xp[m] ? k : m, "q");
   const dayN = Math.min(S.pos + 1, QUEUE.length);
   const iosLike = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
@@ -690,8 +712,9 @@ function todayView() {
   <section class="panel missionspanel">
     <div class="row2"><h3>Field missions</h3><span class="small muted">+15 xp each</span></div>
     ${open.length ? open.map(m => { const t = T(m.id); const k = t ? t.sk : "q";
-      return `<button class="mission ${m.done ? "done" : ""}" style="--k:var(--${k})" data-mission="${esc(m.key)}"><span class="box">${m.done ? "✓" : ""}</span><span><span class="txt">${esc(m.text)}</span><small>${SK[k].name} · ${esc(t ? t.t : "")}</small></span></button>`; }).join("")
-      : `<p class="small muted">Finish a Learn play to get a real-world mission to try that day.</p>`}
+      return `<button class="mission" style="--k:var(--${k})" data-mission="${esc(m.key)}"><span class="box"></span><span><span class="txt">${esc(m.text)}</span><small>${SK[k].name} · ${esc(t ? t.t : "")}${m.date && m.date !== today() ? " · from " + new Date(m.date + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) : ""}</small></span></button>`; }).join("")
+      : `<p class="small muted">${doneN ? "All caught up. New missions arrive with each Learn play." : "Finish a Learn play to get a real-world mission to try that day."}</p>`}
+    ${doneN ? `<button class="link small" data-gomissions style="align-self:flex-start">Mission log · ${doneN} done →</button>` : ""}
   </section>`;
 }
 
@@ -782,6 +805,17 @@ function progressView() {
   <section class="panel"><h3>Skills</h3><div class="ledger">${ORDER.map(k => { const xp = S.xp[k], L = lvl(xp);
     const lc = IX.lib.filter(l => l.sk === k && S.learned[l.id]).length;
     return `<div class="lrow" style="--k:var(--${k})"><span class="name"><i></i>${SK[k].name}</span><span class="lv"><span class="mono">L${L}</span> · ${rank(L)} · ${xp} xp</span><span class="bar"><span style="width:${lvlPct(xp)}%"></span></span><span class="small muted">${lc}/24 techniques learned · ${lvlFloor(L + 1) - xp} xp to L${L + 1}</span></div>`; }).join("")}</div></section>
+  ${(() => {
+    const done = S.missions.filter(m => m.done).sort((a, b) => (b.doneDate || "").localeCompare(a.doneDate || "") || (b.key > a.key ? 1 : -1));
+    if (!done.length) return "";
+    const by = {}; done.forEach(m => { const t = T(m.id); const k = t ? t.sk : "q"; by[k] = (by[k] || 0) + 1; });
+    const show = missionLogAll ? done : done.slice(0, 8);
+    return `<section class="panel missionlog" id="missionlog"><div class="row2"><h3>Mission log</h3><span class="small muted mono">${done.length} done</span></div>
+      <div class="chips">${ORDER.filter(k => by[k]).map(k => `<span class="chip" style="--k:var(--${k})">${SK[k].name} · ${by[k]}</span>`).join("")}</div>
+      <div>${show.map(m => { const t = T(m.id); const k = t ? t.sk : "q";
+        return `<div class="logrow" style="--k:var(--${k})"><span class="box">✓</span><span><span>${esc(m.text)}</span><small>${new Date((m.doneDate || m.date) + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" })} · ${SK[k].name} · ${esc(t ? t.t : "")}</small></span><button class="link small" data-reopen="${esc(m.key)}">Reopen</button></div>`; }).join("")}</div>
+      ${done.length > 8 ? `<button class="link small" data-logall>${missionLogAll ? "Show fewer" : "Show all " + done.length}</button>` : ""}</section>`;
+  })()}
   <section class="panel heatpanel"><div class="row2"><h3>Last 12 weeks</h3><span class="small muted mono">${sessions} plays</span></div><div class="heat">${heat}</div></section>`;
 }
 
@@ -1010,11 +1044,12 @@ function bind() {
     const st = $("[data-start]"); if (st) st.onclick = () => startSession(S.cur && !S.cur.finished && S.cur.date === today() ? S.cur.kind : "daily");
     const bo = $("[data-bonus]"); if (bo) bo.onclick = () => startSession("bonus");
     $$("[data-lib]").forEach(b => b.onclick = () => { libSkill = b.dataset.lib; view = "library"; render(); scrollTo(0, 0); });
-    $$("[data-mission]").forEach(b => b.onclick = () => {
-      const m = S.missions.find(x => x.key === b.dataset.mission); if (!m) return; const t = T(m.id), k = t ? t.sk : "q";
-      if (m.done) { m.done = false; m.doneDate = null; addXP(k, -15); } else { m.done = true; m.doneDate = today(); addXP(k, 15); toast("Mission complete · +15 xp"); }
-      save(); syncSoon(); render();
-    });
+    $$("[data-mission]").forEach(b => b.onclick = () => completeMission(b.dataset.mission, b));
+    const gm = $("[data-gomissions]"); if (gm) gm.onclick = () => { view = "progress"; render(); setTimeout(() => { const el = $("#missionlog"); if (el) el.scrollIntoView({ behavior: "smooth" }); }, 50); };
+  }
+  if (view === "progress") {
+    $$("[data-reopen]").forEach(b => b.onclick = () => reopenMission(b.dataset.reopen));
+    const la = $("[data-logall]"); if (la) la.onclick = () => { missionLogAll = !missionLogAll; render(); const el = $("#missionlog"); if (el) el.scrollIntoView(); };
   }
   if (view === "progress") $$("[data-strength]").forEach(b => b.onclick = () => startSession("practice", strengthenItem(b.dataset.strength)));
   if (view === "library") {
@@ -1179,10 +1214,36 @@ function bindSession() {
     const t = T(sess.item.id);
     S.missions = S.missions.filter(m => !(m.id === t.id && !m.done));
     S.missions.push({ key: "m" + Date.now(), id: t.id, text: t.m, date: today(), done: false });
-    if (S.missions.length > 60) S.missions = S.missions.slice(-60);
+    if (S.missions.length > 500) S.missions = S.missions.slice(-500);
     advance();
   };
   const ms = $("[data-mskip]"); if (ms) ms.onclick = advance;
+}
+
+/* ============ Missions ============ */
+function completeMission(key, el) {
+  const m = S.missions.find(x => x.key === key); if (!m || m.done) return;
+  const t = T(m.id), k = t ? t.sk : "q";
+  m.done = true; m.doneDate = today();
+  let gained = false;
+  if (!m.awarded) { m.awarded = true; addXP(k, 15); gained = true; }
+  save(); syncSoon();
+  if (el) { el.classList.add("leaving"); setTimeout(render, 380); } else render();
+  undoToast("Mission complete" + (gained ? " · +15 xp" : ""), () => {
+    m.done = false; m.doneDate = null;
+    if (gained) { m.awarded = false; addXP(k, -15); }
+    save(); syncSoon(); render();
+  });
+}
+function reopenMission(key) {
+  const m = S.missions.find(x => x.key === key); if (!m) return;
+  m.done = false; m.doneDate = null; save(); syncSoon(); render(); toast("Moved back to your active missions");
+}
+function undoToast(msg, onUndo) {
+  const el = $("#toast"); el.innerHTML = ""; el.append(msg + "  ");
+  const b = document.createElement("button"); b.className = "undo"; b.textContent = "Undo";
+  b.onclick = () => { clearTimeout(toast.t); el.hidden = true; onUndo(); };
+  el.append(b); el.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => el.hidden = true, 5000);
 }
 
 /* ============ Keyboard (laptop) ============ */

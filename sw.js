@@ -1,5 +1,5 @@
 // Offline support: app shell is cached on install; everything else is cached as it's fetched.
-const CACHE = "intersection-v19";
+const CACHE = "intersection-v20";
 const SHELL = ["./", "index.html", "app.css", "app.js", "tree.js", "manifest.webmanifest",
   "content/core.js", "content/questions.js", "content/comms.js", "content/execution.js",
   "content/negotiation.js", "content/sales.js", "content/challenges.js", "content/variants.js",
