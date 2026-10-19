@@ -10,7 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "16";
+const APP_VERSION = "17";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -1074,6 +1074,7 @@ function bindSettings() {
   const nh = $("#notifHour"); if (nh) nh.onchange = async e => { S.settings.notifHour = +e.target.value; save(); try { await writePushFile(); toast("Nudge moved to " + fmtHour(S.settings.notifHour)); } catch (err) { toast(err.message); } };
   const np = $("#notifPreview"); if (np) np.onclick = async () => {
     try { const reg = await navigator.serviceWorker.ready; const n = nextUpInfo() || {};
+      (await reg.getNotifications()).forEach(x => x.close());
       await reg.showNotification("Today's play: " + (n.title || "ready"), { body: n.tip || "About five minutes. Tap to start.", icon: "icons/icon-192.png", badge: "icons/icon-192.png", tag: "daily" }); }
     catch (e) { toast("Couldn't show a preview. Check notification permission."); }
   };
