@@ -1,7 +1,7 @@
 name: Daily nudge
 on:
   schedule:
-    - cron: "5 * * * *"   # hourly; the script only sends at your chosen local hour
+    - cron: "7,37 * * * *"   # every 30 min; the script only sends once, in the window after your chosen local time
   workflow_dispatch:
     inputs:
       force:
@@ -12,11 +12,33 @@ jobs:
   nudge:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20 }
-      - run: npm install --no-save web-push@3.6.7
-      - run: node scripts/nudge.mjs
+      - id: day
+        run: echo "date=$(TZ=America/Toronto date +%F)" >> "$GITHUB_OUTPUT"
+      - id: sent
+        if: github.event_name == 'schedule'
+        uses: actions/cache/restore@v4
+        with:
+          path: .nudge-sent
+          key: nudge-sent-${{ steps.day.outputs.date }}
+      - if: steps.sent.outputs.cache-hit == 'true'
+        run: echo "::notice::Already nudged today."
+      - if: steps.sent.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+      - if: steps.sent.outputs.cache-hit != 'true'
+        uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - if: steps.sent.outputs.cache-hit != 'true'
+        run: npm install --no-save web-push@3.6.7
+      - id: send
+        if: steps.sent.outputs.cache-hit != 'true'
+        run: node scripts/nudge.mjs
         env:
           GIST_ID: ${{ secrets.GIST_ID }}
           FORCE: ${{ github.event.inputs.force || 'false' }}
+      - if: github.event_name == 'schedule' && steps.send.outputs.sent == 'true'
+        run: mkdir -p .nudge-sent && date > .nudge-sent/stamp
+      - if: github.event_name == 'schedule' && steps.send.outputs.sent == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .nudge-sent
+          key: nudge-sent-${{ steps.day.outputs.date }}
