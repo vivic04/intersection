@@ -10,7 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "18";
+const APP_VERSION = "19";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -189,7 +189,7 @@ function lvlPct(xp) { const L = lvl(xp), a = lvlFloor(L), b = lvlFloor(L + 1); r
 function streak() { let d = today(), n = 0; if (!S.log[d]) d = addDays(d, -1); while (S.log[d]) { n++; d = addDays(d, -1); } return n; }
 function bestStreak() { const ks = Object.keys(S.log).sort(); let best = 0, run = 0, prev = null; for (const k of ks) { run = prev && addDays(prev, 1) === k ? run + 1 : 1; best = Math.max(best, run); prev = k; } return best; }
 function toast(t) { const el = $("#toast"); el.textContent = t; el.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => el.hidden = true, 2600); }
-function addXP(sks, n) { const list = Array.isArray(sks) ? sks : [sks]; const each = Math.round(n / list.length); const mine = S.xpDev[DEVICE]; list.forEach(k => mine[k] = Math.max(0, (mine[k] || 0) + each)); sumXP(); return n; }
+function addXP(sks, n) { const list = Array.isArray(sks) ? sks : [sks]; const each = Math.round(n / list.length); const mine = (S.xpDev = S.xpDev || {})[DEVICE] || (S.xpDev[DEVICE] = { q: 0, c: 0, e: 0, n: 0, s: 0 }); list.forEach(k => mine[k] = Math.max(0, (mine[k] || 0) + each)); sumXP(); return n; }
 function seeded(seed) { let x = Math.abs(seed) % 2147483647 || 7; return () => (x = x * 16807 % 2147483647) / 2147483647; }
 function hash(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) | 0; return h; }
 function itemSkills(item) { return item.type === "challenge" ? CH(item.id).sk : [T(item.id).sk]; }
@@ -626,6 +626,7 @@ function render() {
   document.body.classList.toggle("insession", view === "session");
   $$(".tabs button").forEach(b => b.classList.toggle("sel", b.dataset.tab === view));
   const app = $("#app");
+  app.className = "app v-" + view;
   if (view === "today") app.innerHTML = todayView();
   else if (view === "library") app.innerHTML = libraryView();
   else if (view === "progress") app.innerHTML = progressView();
@@ -658,7 +659,8 @@ function todayView() {
   const open = S.missions.filter(m => !m.done || m.doneDate === today()).slice(-6).reverse();
   const minK = ORDER.reduce((m, k) => S.xp[k] < S.xp[m] ? k : m, "q");
   const dayN = Math.min(S.pos + 1, QUEUE.length);
-  const install = !isStandalone() ? `<div class="install"><b>Install on your iPhone</b><p class="small muted">In Safari, tap Share, then "Add to Home Screen". It'll open full-screen like a normal app and work offline.</p></div>` : "";
+  const iosLike = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
+  const install = !isStandalone() && iosLike ? `<div class="install"><b>Install on your iPhone</b><p class="small muted">In Safari, tap Share, then "Add to Home Screen". It'll open full-screen like a normal app and work offline.</p></div>` : "";
   let heroBody;
   if (doneToday && !resume) {
     heroBody = `<div class="eyebrow">Today · done</div><h2>Nice. Today's play is done.</h2>
@@ -680,12 +682,12 @@ function todayView() {
   <section class="panel treepanel"><canvas id="tree" aria-label="Your growth tree: one branch per skill, a leaf per technique learned, a blossom per technique mastered"></canvas>
     <div class="row2"><span class="small muted">${Tree.caption()}</span><button class="link small" id="treeReplay" style="white-space:nowrap">↻ Replay</button></div></section>
   ${install}
-  <section class="panel">
+  <section class="panel skillspanel">
     <div class="row2"><h3>Your five skills</h3><span class="small muted">Weakest: <b style="color:var(--${minK})">${SK[minK].name}</b></span></div>
     <div class="ledger">${ORDER.map(k => { const xp = S.xp[k], L = lvl(xp);
       return `<button class="lrow" style="--k:var(--${k})" data-lib="${k}"><span class="name"><i></i>${SK[k].name}</span><span class="lv"><span class="mono">L${L}</span> · ${rank(L)}</span><span class="bar"><span style="width:${lvlPct(xp)}%"></span></span></button>`; }).join("")}</div>
   </section>
-  <section class="panel">
+  <section class="panel missionspanel">
     <div class="row2"><h3>Field missions</h3><span class="small muted">+15 xp each</span></div>
     ${open.length ? open.map(m => { const t = T(m.id); const k = t ? t.sk : "q";
       return `<button class="mission ${m.done ? "done" : ""}" style="--k:var(--${k})" data-mission="${esc(m.key)}"><span class="box">${m.done ? "✓" : ""}</span><span><span class="txt">${esc(m.text)}</span><small>${SK[k].name} · ${esc(t ? t.t : "")}</small></span></button>`; }).join("")
@@ -700,14 +702,14 @@ function libraryView() {
   <div class="seg" style="--k:var(--${k})">${ORDER.map(s => `<button class="${s === k ? "sel" : ""}" style="--k:var(--${s})" data-seg="${s}">${SK[s].name}</button>`).join("")}</div>
   <p class="muted small">Practise anything here any time. Practice earns XP but doesn't move your daily path forward.</p>`;
   for (let tier = 1; tier <= 3; tier++) {
-    html += `<section class="panel" style="--k:var(--${k})"><div class="eyebrow tier">${TIER[tier]}</div><div>`;
+    html += `<section class="panel tierpanel" style="--k:var(--${k})"><div class="eyebrow tier">${TIER[tier]}</div><div>`;
     list.filter(l => l.tier === tier).forEach(l => {
       const st = memStatus(l.id), r = S.mem[l.id];
       html += `<button class="lesson" data-open="${l.id}"><span class="t">${esc(l.t)}</span><span class="s">${esc(l.src)}</span><span class="st"><span class="pill ${st.cls}">${st.label}</span>${r ? `<span class="minibar"><span style="width:${r.m}%"></span></span>` : ""}</span></button>`;
     });
     html += `</div></section>`;
   }
-  html += `<section class="panel" style="--k:var(--${k})"><div class="eyebrow tier">Intersection challenges</div><div>`;
+  html += `<section class="panel chpanel" style="--k:var(--${k})"><div class="eyebrow tier">Intersection challenges</div><div class="chgrid">`;
   chs.forEach(c => html += `<button class="lesson" data-opench="${c.id}"><span class="t">${esc(c.t)}</span><span class="s">${c.sk.map(s => SK[s].name).join(" + ")}</span><span class="st">${S.mem[c.id] ? `<span class="pill ${memStatus(c.id).cls}">${memStatus(c.id).label}</span>` : `<span class="pill">Try</span>`}</span></button>`);
   return html + `</div></section>`;
 }
@@ -780,7 +782,7 @@ function progressView() {
   <section class="panel"><h3>Skills</h3><div class="ledger">${ORDER.map(k => { const xp = S.xp[k], L = lvl(xp);
     const lc = IX.lib.filter(l => l.sk === k && S.learned[l.id]).length;
     return `<div class="lrow" style="--k:var(--${k})"><span class="name"><i></i>${SK[k].name}</span><span class="lv"><span class="mono">L${L}</span> · ${rank(L)} · ${xp} xp</span><span class="bar"><span style="width:${lvlPct(xp)}%"></span></span><span class="small muted">${lc}/24 techniques learned · ${lvlFloor(L + 1) - xp} xp to L${L + 1}</span></div>`; }).join("")}</div></section>
-  <section class="panel"><div class="row2"><h3>Last 12 weeks</h3><span class="small muted mono">${sessions} plays</span></div><div class="heat">${heat}</div></section>`;
+  <section class="panel heatpanel"><div class="row2"><h3>Last 12 weeks</h3><span class="small muted mono">${sessions} plays</span></div><div class="heat">${heat}</div></section>`;
 }
 
 function settingsView() {
@@ -1182,6 +1184,27 @@ function bindSession() {
   };
   const ms = $("[data-mskip]"); if (ms) ms.onclick = advance;
 }
+
+/* ============ Keyboard (laptop) ============ */
+document.addEventListener("keydown", e => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const typing = /INPUT|TEXTAREA|SELECT/.test((document.activeElement || {}).tagName || "");
+  if (e.key === "Escape" && view === "session") { e.preventDefault(); exitSession(); return; }
+  if (typing) return;
+  if (view !== "session") {
+    const tabs = { t: "today", l: "library", p: "progress", s: "settings" };
+    if (tabs[e.key]) { view = tabs[e.key]; render(); scrollTo(0, 0); }
+    if (e.key === "Enter" && view === "today") { const b = $("[data-start]") || $("[data-bonus]"); if (b) { e.preventDefault(); b.click(); } }
+    return;
+  }
+  const opts = $$("[data-quiz]:not([disabled]), [data-rev]:not([disabled])");
+  if (/^[1-3]$/.test(e.key) && opts[+e.key - 1]) { e.preventDefault(); opts[+e.key - 1].click(); return; }
+  if (e.key === "r" || e.key === "R") { const rb = $("#recBtn"); if (rb) { e.preventDefault(); rb.click(); } return; }
+  if (e.key === "Enter" || e.key === "ArrowRight") {
+    const b = $("[data-next]") || $("[data-recdone]:not([disabled])") || $("[data-maccept]") || $("[data-exit].btn");
+    if (b) { e.preventDefault(); b.click(); }
+  }
+});
 
 /* ============ Boot ============ */
 if (S.cur && S.cur.date !== today() && !S.cur.finished) { /* stale unfinished session from a previous day: keep item, reset reviews */ S.cur.date = today(); S.cur.reviews = []; S.cur.ri = 0; }

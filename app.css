@@ -188,3 +188,68 @@ body.insession .tabs{display:none}
 
 .treepanel{padding-bottom:10px}
 #tree{width:100%;height:230px;display:block}
+
+/* ================= Adaptive layout: phone · tablet · laptop ================= */
+.tabs .brand{display:none}
+.kbd-hint{display:none}
+#tree{height:clamp(220px, 32vw, 340px)}
+
+/* Tablet and up: wider canvas, two-column dashboards */
+@media (min-width: 700px){
+  .app{max-width:920px;gap:20px}
+  h1{font-size:2.1rem}
+  .app.v-today{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);align-items:start}
+  .app.v-today > .top,.app.v-today > .install{grid-column:1 / -1}
+  .app.v-today{align-items:stretch}
+  .app.v-today > .hero{grid-column:1;justify-content:center}
+  .app.v-today > .treepanel{grid-column:2;grid-row:span 1}
+  .app.v-today > .skillspanel{grid-column:1}
+  .app.v-today > .missionspanel{grid-column:2}
+  .app.v-progress{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:start}
+  .app.v-progress > header,.app.v-progress > .stats,.app.v-progress > .heatpanel{grid-column:1 / -1}
+  .app.v-library{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
+  .app.v-library > header,.app.v-library > .seg,.app.v-library > p,.app.v-library > .chpanel{grid-column:1 / -1}
+  .chgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:24px}
+  .chgrid .lesson:nth-last-child(2){border-bottom:none}
+  .app.v-settings{display:block;columns:2;column-gap:20px}
+  .app.v-settings > *{break-inside:avoid;margin-bottom:20px;display:flex}
+  .app.v-settings > header{column-span:all;display:block}
+  .app.v-session{max-width:680px}
+  .heat{gap:6px}
+  .scores button{padding:14px 0}
+}
+
+/* Laptop / iPad landscape: sidebar navigation, roomier grid */
+@media (min-width: 1100px){
+  body{padding-left:calc(248px + 32px);padding-right:32px;padding-bottom:40px}
+  body.insession{padding-left:32px}
+  .app{max-width:1120px}
+  .app.v-today{grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) minmax(0,1fr)}
+  .app.v-today{grid-template-areas:"top top top" "hero tree tree" "skills skills missions"}
+  .app.v-today > .top{grid-area:top} .app.v-today > .hero{grid-area:hero}
+  .app.v-today > .treepanel{grid-area:tree} .app.v-today > .skillspanel{grid-area:skills} .app.v-today > .missionspanel{grid-area:missions}
+  .app.v-library{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .chgrid{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .app.v-progress{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .app.v-settings{columns:3}
+  .tabs{top:0;bottom:0;right:auto;width:248px;display:flex;flex-direction:column;gap:4px;align-items:stretch;
+    padding:max(28px, env(safe-area-inset-top)) 16px 24px max(16px, env(safe-area-inset-left));border-top:none;border-right:1px solid var(--line)}
+  .tabs .brand{display:flex;align-items:center;gap:10px;font-family:var(--display);font-weight:800;font-size:1.2rem;padding:0 10px 22px}
+  .tabs .brand svg{width:34px;height:34px}
+  .tabs button{flex-direction:row;justify-content:flex-start;gap:12px;font-size:.95rem;padding:10px 12px;border-radius:12px;min-height:44px}
+  .tabs button.sel{background:var(--soft)}
+  .toast{bottom:28px;left:calc(50% + 124px)}
+  body.insession .toast{left:50%}
+  .kbd-hint{display:block;position:fixed;left:16px;bottom:18px;width:216px;font-size:.72rem;color:var(--muted);line-height:1.6}
+  body.insession .kbd-hint{left:auto;right:24px;width:auto;bottom:16px}
+}
+@media (min-width: 1100px) and (pointer: coarse){ .kbd-hint{display:none !important} }
+
+/* Pointer devices: hover affordances */
+@media (hover: hover){
+  .lrow:hover,.lesson:hover{background:color-mix(in srgb,var(--soft) 60%,transparent)}
+  .opt:hover:not([disabled]),.mission:hover{border-color:var(--muted)}
+  .btn:hover:not(:disabled){filter:brightness(1.06)}
+  .tabs button:hover{color:var(--ink)}
+}
+.lrow,.lesson{transition:background .15s}
