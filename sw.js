@@ -1,8 +1,8 @@
 // Offline support: app shell is cached on install; everything else is cached as it's fetched.
-const CACHE = "intersection-v14";
+const CACHE = "intersection-v15";
 const SHELL = ["./", "index.html", "app.css", "app.js", "tree.js", "manifest.webmanifest",
   "content/core.js", "content/questions.js", "content/comms.js", "content/execution.js",
-  "content/negotiation.js", "content/sales.js", "content/challenges.js",
+  "content/negotiation.js", "content/sales.js", "content/challenges.js", "content/variants.js",
   "icons/icon-180.png", "icons/icon-192.png", "icons/icon-512.png"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())); });

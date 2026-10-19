@@ -10,7 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "14";
+const APP_VERSION = "15";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -149,7 +149,7 @@ function itemSkills(item) { return item.type === "challenge" ? CH(item.id).sk : 
 function itemTitle(item) { return item.type === "challenge" ? CH(item.id).t : T(item.id).t; }
 const typeLabel = { learn: "Learn + drill", speak: "Speaking drill", challenge: "Intersection challenge", mastery: "Mastery round", redo: "Strengthen" };
 function itemLabel(item) {
-  if (item.redo) { const r = S.mem[item.id]; return "Strengthen" + (r && r.last ? " · last score " + r.last + "/5" : ""); }
+  if (item.redo) { const r = S.mem[item.id]; return "Strengthen" + (item.v ? " · " + VARY_LABEL[item.v] : "") + (r && r.last ? " · last " + r.last + "/5" : ""); }
   return typeLabel[item.mastery ? "mastery" : item.type];
 }
 
@@ -299,7 +299,8 @@ function gradeContext(item) {
   }
   const t = T(item.id);
   if (item.type === "learn") return { skill: SK[t.sk].name, technique: t.t + " (" + t.src + ")", idea: t.idea, task: t.drill, rubric: t.steps, model: t.model };
-  return { skill: SK[t.sk].name, technique: t.t + " (" + t.src + ")", idea: t.idea, task: t.scene + "\nTask: " + t.ask, rubric: t.rub, model: t.model };
+  const d = variantScene(item);
+  return { skill: SK[t.sk].name, technique: t.t + " (" + t.src + ")", idea: t.idea, task: d.scene + "\nTask: " + d.ask, rubric: d.rub, model: d.model };
 }
 function gradePrompt(item, answer, spoken) {
   const g = gradeContext(item);
@@ -307,7 +308,7 @@ function gradePrompt(item, answer, spoken) {
 Technique: ${g.technique}
 ${g.idea ? "Core idea: " + g.idea + "\n" : ""}Exercise: ${g.task}
 Rubric: ${g.rubric.map((r, i) => (i + 1) + ") " + r).join("  ")}
-Reference answer (one good version, not the only one): ${g.model}
+${g.model ? "Reference answer (one good version, not the only one): " + g.model : "There is no reference answer for this one; judge it against the rubric and the technique."}
 
 My ${spoken ? "spoken answer (speech-to-text transcript, so ignore small transcription errors)" : "answer"}:
 """${answer}"""
@@ -336,17 +337,41 @@ const GRADE_APPS = {
 const prov = () => PROVIDERS[S.settings.provider] || PROVIDERS.anthropic;
 const gradeModel = () => (S.settings.model || "").trim() || prov().model;
 async function aiGrade(item, answer, spoken) {
+  const text = await aiText(gradePrompt(item, answer, spoken));
+  const m = text.match(/Score:\s*([0-5](?:\.\d)?)/i);
+  return { text, score: m ? Math.round(+m[1]) : null };
+}
+let freshBusy = false;
+async function genFresh() {
+  if (freshBusy || !sess) return; freshBusy = true;
+  const s0 = sess, t = T(s0.item.id);
+  const used = [t.scene].concat((IX.vars[t.id] || []).map(v => v[0])).concat(s0.prevFresh || []);
+  const settings = ["a job interview", "a family or friendship situation", "a side business with clients", "a meeting with senior leaders", "a peer at work", "a landlord, vendor or service provider", "a networking event", "a team you lead"];
+  const where = settings[(hash(t.id + today()) >>> 0) % settings.length];
+  const prompt = `Write one short, realistic practice scenario for the communication technique "${t.t}" (${t.src}). Core idea: ${t.idea}
+Setting: ${where}. The person practising is a young professional in Toronto who works in AI strategy at a bank and runs a small career-coaching business.
+It must be clearly different from these: ${used.join(" | ")}
+Reply with only JSON: {"scene": "1–2 sentences, second person, concrete details", "ask": "one sentence telling them what to say out loud"}`;
+  try {
+    const raw = await aiText(prompt, 300);
+    const j = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
+    if (!j.scene || !j.ask) throw 0;
+    if (sess === s0) { s0.fresh = { scene: String(j.scene), ask: String(j.ask) }; save(); render(); }
+  } catch (e) {
+    if (sess === s0) { s0.item.v = "v0"; toast("Couldn't write a fresh scenario, so here's a new one from the library."); save(); render(); }
+  } finally { freshBusy = false; }
+}
+async function aiText(prompt, maxTokens = 500) {
   const key = S.settings.apiKey.trim(), P = S.settings.provider || "anthropic", model = gradeModel();
-  const prompt = gradePrompt(item, answer, spoken);
   let url, opts;
   if (P === "anthropic") {
     url = "https://api.anthropic.com/v1/messages";
     opts = { headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-      body: JSON.stringify({ model, max_tokens: 500, messages: [{ role: "user", content: prompt }] }) };
+      body: JSON.stringify({ model, max_tokens: maxTokens, messages: [{ role: "user", content: prompt }] }) };
   } else if (P === "gemini") {
     url = "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent";
     opts = { headers: { "content-type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: 600 } }) };
+      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: maxTokens + 100 } }) };
   } else {
     url = P === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://api.openai.com/v1/chat/completions";
     opts = { headers: { "content-type": "application/json", "Authorization": "Bearer " + key },
@@ -367,9 +392,7 @@ async function aiGrade(item, answer, spoken) {
   if (P === "anthropic") text = (j.content || []).map(b => b.text || "").join("");
   else if (P === "gemini") text = ((j.candidates || [])[0]?.content?.parts || []).map(p => p.text || "").join("");
   else text = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || "";
-  text = text.trim();
-  const m = text.match(/Score:\s*([0-5](?:\.\d)?)/i);
-  return { text, score: m ? Math.round(+m[1]) : null };
+  return text.trim();
 }
 async function copyText(t) { try { await navigator.clipboard.writeText(t); return true; } catch (e) { return false; } }
 
@@ -443,8 +466,28 @@ function dueStrengthen() {
   return Object.entries(S.mem).filter(([, r]) => r.due <= today())
     .sort((a, b) => a[1].m - b[1].m || a[1].due.localeCompare(b[1].due)).map(([id, r]) => ({ id, r }));
 }
+// Revisits rotate through different formats so you practise the skill, not the memory of one answer.
+const VARY_LABEL = { orig: "Original scenario", v0: "New scenario", v1: "New scenario", teach: "Teach it back", real: "Real-life rehearsal", fresh: "Fresh AI scenario" };
+function varyCycle() { return S.settings.apiKey ? ["v0", "fresh", "teach", "v1", "real", "fresh", "orig"] : ["v0", "teach", "v1", "real", "orig"]; }
 function strengthenItem(id) {
-  return id.startsWith("x") ? { type: "challenge", id, redo: true } : { type: "speak", id, redo: true };
+  if (id.startsWith("x")) return { type: "challenge", id, redo: true };
+  const r = S.mem[id], cyc = varyCycle();
+  return { type: "speak", id, redo: true, v: cyc[((r && r.vi) || 0) % cyc.length] };
+}
+function variantScene(item) {
+  const t = T(item.id), v = item.v || "orig";
+  const base = { id: t.id, label: VARY_LABEL[v] || "Scenario" };
+  if (v[0] === "v" && IX.vars[t.id] && IX.vars[t.id][+v.slice(1)]) {
+    const [scene, ask] = IX.vars[t.id][+v.slice(1)];
+    return Object.assign(base, { scene, ask, rub: t.steps.concat(["Fits this specific situation rather than a generic answer"]), model: null, clip: t.id + "_" + v });
+  }
+  if (v === "teach") return Object.assign(base, { scene: `A friend has never heard of "${t.t}". Explain it so they could use it tomorrow.`, ask: "In under 45 seconds: what it is, when to use it, and one example from your own life.", rub: ["Explains the core idea accurately, in plain words", "Says when it's most useful", "Gives a concrete example of your own, not the lesson's"], model: null, clip: t.id + "_teach" });
+  if (v === "real") return Object.assign(base, { scene: `Think of a real conversation, decision or message coming up in the next week where "${t.t}" applies.`, ask: "Say who it's with and what's at stake, then rehearse the exact words you'll use.", rub: t.steps.concat(["Uses real, specific words you'd actually say"]), model: null, clip: t.id + "_real" });
+  if (v === "fresh") {
+    const f = (sess && sess.item === item && sess.fresh) || {};
+    return Object.assign(base, { scene: f.scene || "", ask: f.ask || "", rub: t.steps.concat(["Fits this specific situation rather than a generic answer"]), model: null, clip: null, pending: !f.scene });
+  }
+  return Object.assign(base, { scene: t.scene, ask: t.ask, rub: t.rub, model: t.model, clip: t.id + "_scene", label: "Original scenario" });
 }
 // Backfill strength from earlier grades for anyone who started before this existed
 (function migrateMem() {
@@ -507,6 +550,7 @@ function finishSession() {
   } else if (it.type === "speak") S.spoken[it.id] = d;
   else S.chDone[it.id] = d;
   if (sess.score != null) applyGrade(it.id, sess.score || 1);
+  if (it.v && S.mem[it.id]) S.mem[it.id].vi = (S.mem[it.id].vi || 0) + 1;
   else if (it.type === "learn" && !S.mem[it.id]) S.mem[it.id] = { m: sess.quizPick === T(it.id).q[0][2] ? 35 : 20, int: 1, n: 0, due: addDays(d, 1) };
   if (sess.kind !== "practice") {
     if (it.redo) { S.lastMain = "redo"; S.redoRun = (S.redoRun || 0) + 1; }
@@ -630,9 +674,11 @@ function libDetail(id) {
     <p class="idea">${esc(t.idea)}</p>
     <ul class="list">${t.steps.map(s => `<li>${esc(s)}</li>`).join("")}</ul>
     <div class="btnrow"><button class="btn k" data-practice="learn">Practise: written</button><button class="btn ghost" data-practice="speak">Practise: speaking</button></div>
+    <button class="btn soft wide" data-vary>Practise in a new situation</button>
   </div>`;
   $("[data-back]").onclick = () => { view = "library"; render(); };
   $$("[data-practice]").forEach(b => b.onclick = () => startSession("practice", { type: b.dataset.practice, id }));
+  $("[data-vary]").onclick = () => startSession("practice", strengthenItem(id));
   scrollTo(0, 0);
 }
 
@@ -805,6 +851,11 @@ function drillStep() {
     <button class="btn wide" data-drilldone>Get graded →</button>
     <p class="small muted">Skipping? <button class="link" data-skipdrill>Skip the drill</button></p>`;
 }
+function modelPanel(d, cls) {
+  if (d.model) return `<div class="${cls}"><span class="eyebrow">Model answer</span><p>${esc(d.model)}</p></div>`;
+  const t = T(sess.item.id);
+  return `<div class="${cls}"><span class="eyebrow">No single right answer here</span><p class="small muted">Check yourself against the technique: ${t.steps.map(esc).join(" · ")}.</p><p class="small muted" style="margin-top:6px">For comparison, a strong answer in a different scenario:</p><p>${esc(t.model)}</p></div>`;
+}
 function recapStep() {
   const t = T(sess.item.id);
   sayClips.recap = t.id + "_learn"; sayTexts.recap = t.t + ". " + t.idea;
@@ -812,11 +863,12 @@ function recapStep() {
     <p class="idea">${esc(t.idea)}</p><ul class="list">${t.steps.map(s => `<li>${esc(s)}</li>`).join("")}</ul>
     <button class="btn wide" data-next>Show me the scenario →</button>`;
 }
-function sceneData() { return sess.item.type === "challenge" ? CH(sess.item.id) : T(sess.item.id); }
+function sceneData() { return sess.item.type === "challenge" ? CH(sess.item.id) : variantScene(sess.item); }
 function sceneStep() {
   const d = sceneData();
-  sayClips.scene = d.id + "_scene"; sayTexts.scene = d.scene + " " + d.ask;
-  return `<div class="eyebrow">${sess.item.type === "challenge" ? "Intersection challenge" : "Scenario"}</div>
+  if (d.pending) { genFresh(); return `<div class="eyebrow">Fresh AI scenario</div><h2>Writing you a new situation…</h2><p class="muted">One you haven't seen before, for the same technique.</p>`; }
+  sayClips.scene = d.clip || (d.id + "_scene"); sayTexts.scene = d.scene + " " + d.ask;
+  return `<div class="eyebrow">${sess.item.type === "challenge" ? "Intersection challenge" : esc(d.label || "Scenario")}</div>
     ${sess.item.type === "challenge" ? `<h1>${esc(d.t)}</h1>` : ""}
     <div class="scene">${esc(d.scene)}</div>${listenBtn("scene", "Read it to me")}
     <p class="ask">${esc(d.ask)}</p>
@@ -858,7 +910,7 @@ function gradeStep() {
   }
   if (sess.score != null) {
     html += `<div class="result"><div class="row2"><span class="eyebrow">${sess.gradedBy === "ai" ? "AI coach" : sess.gradedBy === "claude" || sess.gradedBy === "app" ? (GRADE_APPS[S.settings.gradeApp] || GRADE_APPS.claude).name : "Self-check"}</span><span class="score">${sess.score}/5</span></div>${sess.gradeText ? `<div>${esc(sess.gradeText)}</div>` : ""}</div>
-      <div class="panel"><span class="eyebrow">Model answer</span><p>${esc(d.model)}</p></div>
+      ${modelPanel(d, "panel")}
       <button class="btn wide" data-next>${stepsFor(it).length - 1 === sess.step ? "Finish ✓" : "Continue →"}</button>`;
     return html;
   }
@@ -869,7 +921,7 @@ function gradeStep() {
     <div id="claudeScore" hidden class="panel"><span class="eyebrow">What score did ${GA.name} give you?</span><div class="scores">${[1, 2, 3, 4, 5].map(n => `<button data-cscore="${n}">${n}</button>`).join("")}</div></div>
     <details class="panel"><summary style="font-weight:700;cursor:pointer">Or check yourself</summary>
       ${rub ? `<p class="small muted">Tick what you actually did:</p><div class="rub">${rub.map((r, i) => `<label><input type="checkbox" data-tick="${i}"><span>${esc(r)}</span></label>`).join("")}</div>` : `<p class="small muted">Compare with the model answer, then rate yourself.</p>`}
-      <div class="model"><span class="eyebrow">Model answer</span><p>${esc(d.model)}</p></div>
+      ${modelPanel(d, "model")}
       ${rub ? `<button class="btn soft wide" id="selfRub">Score my ticks</button>` : `<div class="scores">${[1, 2, 3, 4, 5].map(n => `<button data-self="${n}">${n}</button>`).join("")}</div>`}
     </details>`;
   return html;
