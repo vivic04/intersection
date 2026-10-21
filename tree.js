@@ -13,7 +13,7 @@ const Tree = (() => {
     const br = ORDER.map(k => ({
       k,
       len: Math.min(1, Math.sqrt((S.xp[k] || 0) / 2200)),
-      leaves: IX.lib.filter(l => l.sk === k && (S.learned[l.id] || S.mem[l.id])).map(l => ({ id: l.id, bloom: S.mem[l.id] && S.mem[l.id].m >= MASTERED && S.mem[l.id].n >= 2 }))
+      leaves: IX.lib.filter(l => l.sk === k && (S.learned[l.id] || S.mem[l.id])).map(l => ({ id: l.id, bloom: isMastered(S.mem[l.id]) }))
     }));
     return { plays, trunk: Math.min(1, Math.pow(plays / 120, 0.55)), br };
   }

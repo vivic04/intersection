@@ -10,7 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "20";
+const APP_VERSION = "21";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -103,6 +103,7 @@ function initLedger() {
   sumXP();
 }
 S.missions.forEach(m => { if (m.done && m.awarded === undefined) m.awarded = true; });
+for (const [id, r] of Object.entries(S.mem || {})) if (r.fives === undefined) r.fives = (S.history || []).filter(h => h.id === id && h.score === 5).length;
 initLedger();
 // Merge another device's progress into this one: union of history, latest of each record, never losing plays.
 function mergeStates(L, R) {
@@ -513,9 +514,12 @@ function applyGrade(id, score) {
   const sc = Math.max(1, Math.min(5, Math.round(score)));
   const r = S.mem[id] || { m: 0, int: 0, n: 0 };
   r.m = r.n ? Math.round(0.55 * r.m + 0.45 * sc * 20) : sc * 20;
-  r.int = sc <= 2 ? 1 : sc === 3 ? 3 : sc === 4 ? Math.max(5, Math.round((r.int || 2) * 2)) : Math.max(8, Math.round((r.int || 3) * 3));
-  r.int = Math.min(120, r.int);
-  r.n++; r.last = sc; r.at = today(); r.due = addDays(today(), r.int);
+  if (sc === 5) r.fives = (r.fives || 0) + 1;
+  r.n++; r.last = sc; r.at = today();
+  // Until it's mastered, a technique keeps coming back within a week. Only mastered ones get spaced out to months.
+  if (isMastered(r)) r.int = Math.min(120, Math.max(10, Math.round((r.int || 5) * 2.5)));
+  else r.int = sc <= 2 ? 1 : sc === 3 ? 3 : sc === 4 ? 4 : 6;
+  r.due = addDays(today(), r.int);
   S.mem[id] = r;
 }
 function nudge(id, ok) { // quick quiz reviews nudge strength without overriding drill grades
@@ -523,10 +527,14 @@ function nudge(id, ok) { // quick quiz reviews nudge strength without overriding
   r.m = Math.max(0, Math.min(100, r.m + (ok ? 4 : -12)));
   if (!ok) { r.due = addDays(today(), 1); r.int = 1; }
 }
+// Mastered = two 5/5 answers (revisits rotate scenarios, so these are on different situations) and your latest attempt is still 4+.
+const FIVES_TO_MASTER = 2;
+function isMastered(r) { return !!r && (r.fives || 0) >= FIVES_TO_MASTER && (r.last || 0) >= 4; }
 function memStatus(id) {
   const r = S.mem[id];
   if (!r) return S.learned[id] ? { label: "Learned", cls: "" } : { label: "New", cls: "" };
-  if (r.m >= MASTERED && r.n >= 2) return { label: "Mastered", cls: "good" };
+  if (isMastered(r)) return { label: "Mastered", cls: "good" };
+  if ((r.fives || 0) >= 1 && (r.last || 0) >= 4) return { label: "★ 1 of 2", cls: "ok" };
   if (r.m >= WEAK) return { label: "Solid", cls: "ok" };
   return { label: "Needs work", cls: "weak" };
 }
@@ -797,7 +805,7 @@ function progressView() {
       <div class="stats"><div class="stat"><b class="mono" style="color:var(--good)">${cnt.good}</b><span>Mastered</span></div><div class="stat"><b class="mono">${cnt.ok}</b><span>Solid</span></div><div class="stat"><b class="mono" style="color:var(--bad)">${cnt.weak}</b><span>Needs work</span></div></div>
       ${weakest.length ? `<span class="eyebrow">Weakest right now</span><div>${weakest.map(id => { const k = T(id) ? T(id).sk : CH(id).sk[0];
         return `<button class="lesson" style="--k:var(--${k})" data-strength="${id}"><span class="t">${esc(itemTitle({ type: T(id) ? "learn" : "challenge", id }))}</span><span class="s">Last score ${S.mem[id].last || "–"}/5 · strength ${S.mem[id].m}%</span><span class="st"><span class="pill weak">Practise</span></span></button>`; }).join("")}</div>` : `<p class="small muted">Nothing weak right now. Weak scores show up here.</p>`}
-      <p class="small muted">Score 1–2 and it comes back tomorrow. Score 3 and it's back in a few days. Score 4–5 and it's spaced out further each time, up to months. Your daily play mixes these in with new material.</p></section>`;
+      <p class="small muted">Score 1–2 and it comes back tomorrow; 3–4 and it's back within days, in a new situation. A technique is Mastered after two 5/5s with your latest attempt still 4+; only then does it space out to weeks and months. Your daily play mixes these in with new material.</p></section>`;
   })()}
   <section class="panel"><div class="row2"><h3>Path</h3><span class="small muted mono">${S.pos}/${QUEUE.length}</span></div>
     <div class="bar" style="--k:var(--accent)"><span style="width:${Math.round(S.pos / QUEUE.length * 100)}%"></span></div>
@@ -940,6 +948,32 @@ function drillStep() {
     <button class="btn wide" data-drilldone>Get graded →</button>
     <p class="small muted">Skipping? <button class="link" data-skipdrill>Skip the drill</button></p>`;
 }
+// Live roleplay: the AI plays the other person, answers only what's asked, then grades strictly.
+function roleplayPrompt(item) {
+  const d = item.type === "challenge" ? CH(item.id) : variantScene(item);
+  const t = item.type === "challenge" ? null : T(item.id);
+  const rub = d.rub || [];
+  return `Let's run a live roleplay so I can practise ${t ? `the technique "${t.t}" (${t.src}). Core idea: ${t.idea}` : `several skills at once (${CH(item.id).sk.map(k => SK[k].name).join(" + ")})`}
+
+Scenario: ${d.scene}
+My task: ${d.ask}
+
+How to play it:
+- You play the other person in this scenario. If there isn't one, play the most realistic person I'd be talking to (a friend, colleague, stakeholder or interviewer).
+- Stay in character. Reply in 1 to 3 sentences, like a real person would.
+- Only answer what I actually ask or say. Don't volunteer the key insight. Decide privately on a realistic hidden answer (for example the real root cause, need or objection) and only reveal it when my questions earn it. Vague questions get vague answers; sharp ones get specifics.
+- Be a bit busy and human: push back sometimes, go off on small tangents, and don't make it easy.
+- Open with one line in character, then wait for me.
+
+After my 6th turn, or whenever I type "grade", step out of character and grade me strictly against:
+${rub.map((r, i) => `${i + 1}) ${r}`).join("\n")}
+Reply in this format:
+Score: N/5 (5 means I handled it the way a skilled professional would; be fair, not stingy)
+What worked: one sentence.
+Fix: the single most important improvement, quoting a moment from our conversation.
+Better move: what I should have said at that moment.
+Hidden answer: what you were holding back, and the question that would have unlocked it fastest.`;
+}
 function modelPanel(d, cls) {
   if (d.model) return `<div class="${cls}"><span class="eyebrow">Model answer</span><p>${esc(d.model)}</p></div>`;
   const t = T(sess.item.id);
@@ -962,7 +996,12 @@ function sceneStep() {
     <div class="scene">${esc(d.scene)}</div>${listenBtn("scene", "Read it to me")}
     <p class="ask">${esc(d.ask)}</p>
     <div class="panel"><span class="eyebrow">You'll be graded on</span><ul class="list small">${d.rub.map(r => `<li>${esc(r)}</li>`).join("")}</ul></div>
-    <button class="btn wide" data-next>I'm ready to answer →</button>`;
+    <button class="btn wide" data-next>I'm ready to answer →</button>
+    <div class="livebox">
+      <a class="btn ghost wide" id="liveBtn" href="#" target="_blank" rel="noopener" style="text-align:center;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:8px">💬 Practise live in ${(GRADE_APPS[S.settings.gradeApp] || GRADE_APPS.claude).name} instead</a>
+      <p class="small muted">${(GRADE_APPS[S.settings.gradeApp] || GRADE_APPS.claude).name} plays the other person, only answers what you ask, then grades you. Come back and tap your score.</p>
+      <div id="liveScore" hidden class="panel"><span class="eyebrow">What score did you get?</span><div class="scores">${[1, 2, 3, 4, 5].map(n => `<button data-livescore="${n}">${n}</button>`).join("")}</div></div>
+    </div>`;
 }
 function recordStep() {
   const d = sceneData();
@@ -987,7 +1026,7 @@ function gradeStep() {
   const m = spoken && sess.transcript ? speechMetrics(sess.transcript, sess.secs) : null;
   const hasKey = !!S.settings.apiKey.trim();
   let html = `<div class="eyebrow">Grade</div>`;
-  if (spoken) {
+  if (spoken && sess.gradedBy !== "live") {
     html += `<h2>How did it go?</h2>
       ${Rec.url ? `<audio controls src="${Rec.url}"></audio>` : ""}
       ${m ? `<div class="metrics"><div class="metric"><b class="mono">${fmtTime(sess.secs)}</b><span>Length</span></div><div class="metric"><b class="mono">${m.wpm}</b><span>Words/min</span></div><div class="metric"><b class="mono" style="color:${m.fillers > 3 ? "var(--bad)" : "var(--good)"}">${m.fillers}</b><span>Fillers</span></div></div>
@@ -998,7 +1037,7 @@ function gradeStep() {
     html += `<h2>Your answer</h2><div class="model" style="background:var(--surface);border:1px solid var(--line)">${esc(sess.draft) || "<i>No answer written.</i>"}</div>`;
   }
   if (sess.score != null) {
-    html += `<div class="result"><div class="row2"><span class="eyebrow">${sess.gradedBy === "ai" ? "AI coach" : sess.gradedBy === "claude" || sess.gradedBy === "app" ? (GRADE_APPS[S.settings.gradeApp] || GRADE_APPS.claude).name : "Self-check"}</span><span class="score">${sess.score}/5</span></div>${sess.gradeText ? `<div>${esc(sess.gradeText)}</div>` : ""}</div>
+    html += `<div class="result"><div class="row2"><span class="eyebrow">${sess.gradedBy === "ai" ? "AI coach" : sess.gradedBy === "live" ? "Live roleplay" : sess.gradedBy === "claude" || sess.gradedBy === "app" ? (GRADE_APPS[S.settings.gradeApp] || GRADE_APPS.claude).name : "Self-check"}</span><span class="score">${sess.score}/5</span></div>${sess.gradeText ? `<div>${esc(sess.gradeText)}</div>` : ""}</div>
       ${modelPanel(d, "panel")}
       <button class="btn wide" data-next>${stepsFor(it).length - 1 === sess.step ? "Finish ✓" : "Continue →"}</button>`;
     return html;
@@ -1029,7 +1068,11 @@ function doneStep() {
     ${sess.score != null && S.mem[sess.item.id] ? (() => { const r = S.mem[sess.item.id], st = memStatus(sess.item.id);
       return `<div class="panel"><div class="row2"><span class="eyebrow">${esc(itemTitle(sess.item))}</span><span class="pill ${st.cls}">${st.label}</span></div>
         <div class="bar"><span style="width:${r.m}%"></span></div>
-        <p class="small muted">${r.last <= 2 ? "This one needs more plays. It'll come back tomorrow." : r.last === 3 ? `Getting there. You'll see it again in ${r.int} days.` : `Strong. Next check-in in ${r.int} days.`}</p></div>`; })() : ""}
+        <p class="small muted">${isMastered(r) ? `Mastered. Next check-in in ${r.int} days to keep it sharp.`
+          : r.last <= 2 ? "This one needs more plays. It'll come back tomorrow, in a different situation."
+          : r.last === 3 ? `Getting there. Back in ${r.int} days with a new scenario.`
+          : r.last === 4 ? `Close. A 5/5 is what counts toward Mastered. Back in ${r.int} days.`
+          : `5/5! That's ${r.fives} of ${FIVES_TO_MASTER} toward Mastered. ${r.fives < FIVES_TO_MASTER ? "Do it again on a different scenario." : ""}`}</p></div>`; })() : ""}
     <div class="confetti">${ORDER.map(k => `<i style="background:var(--${k})"></i>`).join("")}</div>
     <button class="btn wide" data-exit>Done</button>`;
 }
@@ -1194,6 +1237,18 @@ function bindSession() {
       award(sks, sess.score * 5); save(); render();
     } catch (e) { ai.disabled = false; $("#aiOut").innerHTML = `<p class="small" style="color:var(--bad)">${esc(e.message || "Couldn't reach the grader. Check your connection.")}</p>`; }
   };
+  const lb = $("#liveBtn"); if (lb) lb.onclick = e => {
+    const GA = GRADE_APPS[S.settings.gradeApp] || GRADE_APPS.claude, p = roleplayPrompt(sess.item);
+    lb.href = GA.url(p);
+    copyText(p).then(ok => toast(ok ? (GA.paste ? "Roleplay copied. Paste it into " + GA.name + "." : "Roleplay also copied, in case it isn't filled in.") : "Opening " + GA.name + "…"));
+    $("#liveScore").hidden = false;
+  };
+  $$("[data-livescore]").forEach(b => b.onclick = () => {
+    const GA = GRADE_APPS[S.settings.gradeApp] || GRADE_APPS.claude;
+    sess.score = +b.dataset.livescore; sess.gradedBy = "live"; sess.gradeText = "Practised live with " + GA.name + ".";
+    award(itemSkills(sess.item), 10 + sess.score * 5);
+    sess.step = stepsFor(sess.item).indexOf("grade"); save(); render(); scrollTo(0, 0);
+  });
   const cg = $("#claudeGrade"); if (cg) cg.onclick = e => {
     const answer = ($("#ans") ? $("#ans").value : sess.draft).trim() || sess.draft;
     if (!answer) { e.preventDefault(); toast("There's nothing to grade yet. Type what you said."); return; }

@@ -264,3 +264,5 @@ body.insession .tabs{display:none}
 .logrow small{display:block;color:var(--muted);font-size:.78rem;margin-top:2px}
 .toast .undo{background:none;border:none;color:inherit;font-weight:800;text-decoration:underline;text-underline-offset:3px;padding:0 0 0 6px}
 @media (prefers-reduced-motion: reduce){.mission{transition:none}}
+
+.livebox{display:flex;flex-direction:column;gap:8px;border-top:1px dashed var(--line);padding-top:14px}
