@@ -6,6 +6,7 @@ window.IX = {
   },
   vars: {},
   variants(obj) { this.vars = obj; },
+  moreVariants(obj) { for (const [id, arr] of Object.entries(obj)) this.vars[id] = (this.vars[id] || []).concat(arr); },
   challenges(arr) {
     this.ch = arr.map((x, i) => Object.assign({ id: "x" + (i + 1) }, x));
   }

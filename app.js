@@ -10,7 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "21";
+const APP_VERSION = "22";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -544,11 +544,13 @@ function dueStrengthen() {
 }
 // Revisits rotate through different formats so you practise the skill, not the memory of one answer.
 const VARY_LABEL = { orig: "Original scenario", v0: "New scenario", v1: "New scenario", teach: "Teach it back", real: "Real-life rehearsal", fresh: "Fresh AI scenario" };
-function varyCycle() { return S.settings.apiKey ? ["v0", "fresh", "teach", "v1", "real", "fresh", "orig"] : ["v0", "teach", "v1", "real", "orig"]; }
+// Mostly new scenarios (9 per technique, cycled least-recent first), with a teach-back and a real-life rehearsal mixed in.
+function varyCycle() { return S.settings.apiKey ? ["v", "v", "teach", "v", "fresh", "v", "real", "v", "orig"] : ["v", "v", "teach", "v", "v", "real", "v", "orig"]; }
+function nextVariant(id) { const n = (IX.vars[id] || []).length, r = S.mem[id]; return n ? "v" + (((r && r.vp) || 0) % n) : "orig"; }
 function strengthenItem(id) {
   if (id.startsWith("x")) return { type: "challenge", id, redo: true };
-  const r = S.mem[id], cyc = varyCycle();
-  return { type: "speak", id, redo: true, v: cyc[((r && r.vi) || 0) % cyc.length] };
+  const r = S.mem[id], cyc = varyCycle(), f = cyc[((r && r.vi) || 0) % cyc.length];
+  return { type: "speak", id, redo: true, v: f === "v" ? nextVariant(id) : f };
 }
 function variantScene(item) {
   const t = T(item.id), v = item.v || "orig";
@@ -627,7 +629,10 @@ function finishSession() {
   } else if (it.type === "speak") S.spoken[it.id] = d;
   else S.chDone[it.id] = d;
   if (sess.score != null) applyGrade(it.id, sess.score || 1);
-  if (it.v && S.mem[it.id]) S.mem[it.id].vi = (S.mem[it.id].vi || 0) + 1;
+  if (it.v && S.mem[it.id]) {
+    if (!it.direct) S.mem[it.id].vi = (S.mem[it.id].vi || 0) + 1;
+    if (/^v\d+$/.test(it.v)) S.mem[it.id].vp = (S.mem[it.id].vp || 0) + 1;
+  } else if (it.v && /^v\d+$/.test(it.v)) S.mem[it.id] = Object.assign(S.mem[it.id] || { m: 0, int: 1, n: 0, due: today() }, { vp: 1 });
   else if (it.type === "learn" && !S.mem[it.id]) S.mem[it.id] = { m: sess.quizPick === T(it.id).q[0][2] ? 35 : 20, int: 1, n: 0, due: addDays(d, 1) };
   if (sess.kind !== "practice") {
     if (it.redo) { S.lastMain = "redo"; S.redoRun = (S.redoRun || 0) + 1; }
@@ -755,11 +760,18 @@ function libDetail(id) {
     <p class="idea">${esc(t.idea)}</p>
     <ul class="list">${t.steps.map(s => `<li>${esc(s)}</li>`).join("")}</ul>
     <div class="btnrow"><button class="btn k" data-practice="learn">Practise: written</button><button class="btn ghost" data-practice="speak">Practise: speaking</button></div>
-    <button class="btn soft wide" data-vary>Practise in a new situation</button>
+    <button class="btn soft wide" data-vary>Practise in a new situation (${(IX.vars[id] || []).length + 1} available)</button>
+    <a class="btn ghost wide" id="surpriseLive" href="#" target="_blank" rel="noopener" style="text-align:center;text-decoration:none;display:flex;align-items:center;justify-content:center">💬 Surprise me: live roleplay, brand-new situation</a>
+    <p class="small muted">${(GRADE_APPS[S.settings.gradeApp] || GRADE_APPS.claude).name} invents a situation you've never seen, plays the other person, then grades you. Unlimited.</p>
   </div>`;
   $("[data-back]").onclick = () => { view = "library"; render(); };
   $$("[data-practice]").forEach(b => b.onclick = () => startSession("practice", { type: b.dataset.practice, id }));
-  $("[data-vary]").onclick = () => startSession("practice", strengthenItem(id));
+  $("[data-vary]").onclick = () => startSession("practice", { type: "speak", id, redo: true, v: nextVariant(id), direct: true });
+  $("#surpriseLive").onclick = e => {
+    const GA = GRADE_APPS[S.settings.gradeApp] || GRADE_APPS.claude, p = roleplayPrompt({ type: "speak", id }, true);
+    e.currentTarget.href = GA.url(p);
+    copyText(p).then(ok => toast(ok ? (GA.paste ? "Roleplay copied. Paste it into " + GA.name + "." : "Roleplay also copied, in case it isn't filled in.") : "Opening " + GA.name + "…"));
+  };
   scrollTo(0, 0);
 }
 
@@ -949,14 +961,14 @@ function drillStep() {
     <p class="small muted">Skipping? <button class="link" data-skipdrill>Skip the drill</button></p>`;
 }
 // Live roleplay: the AI plays the other person, answers only what's asked, then grades strictly.
-function roleplayPrompt(item) {
-  const d = item.type === "challenge" ? CH(item.id) : variantScene(item);
+function roleplayPrompt(item, invent) {
+  const d = invent ? { scene: "", ask: "", rub: T(item.id).steps.concat(["Fits this specific situation rather than a generic answer"]) } : item.type === "challenge" ? CH(item.id) : variantScene(item);
   const t = item.type === "challenge" ? null : T(item.id);
   const rub = d.rub || [];
   return `Let's run a live roleplay so I can practise ${t ? `the technique "${t.t}" (${t.src}). Core idea: ${t.idea}` : `several skills at once (${CH(item.id).sk.map(k => SK[k].name).join(" + ")})`}
 
-Scenario: ${d.scene}
-My task: ${d.ask}
+${invent ? `Scenario: invent a fresh, realistic one for me. I'm a young professional in Toronto working in AI strategy at a bank and working toward AI product management. Pick a setting I wouldn't expect (work, a job interview, friends or family, a landlord or vendor, a side project, mentoring, networking) and make it different from: ${[T(item.id).scene].concat((IX.vars[item.id] || []).map(v => v[0])).slice(0, 6).join(" | ")}. Tell me the situation and my task in two sentences, then start.` : `Scenario: ${d.scene}
+My task: ${d.ask}`}
 
 How to play it:
 - You play the other person in this scenario. If there isn't one, play the most realistic person I'd be talking to (a friend, colleague, stakeholder or interviewer).
