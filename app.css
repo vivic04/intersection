@@ -266,3 +266,5 @@ body.insession .tabs{display:none}
 @media (prefers-reduced-motion: reduce){.mission{transition:none}}
 
 .livebox{display:flex;flex-direction:column;gap:8px;border-top:1px dashed var(--line);padding-top:14px}
+
+.recentpanel .logrow .box{font-family:var(--mono);font-size:.75rem}

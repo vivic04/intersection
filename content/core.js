@@ -2,7 +2,8 @@
 window.IX = {
   lib: [], ch: [],
   add(sk, arr) {
-    arr.forEach((x, i) => this.lib.push(Object.assign({ sk, id: sk + (i + 1), tier: i < 8 ? 1 : i < 16 ? 2 : 3 }, x)));
+    const base = this.lib.filter(l => l.sk === sk).length;
+    arr.forEach((x, j) => { const i = base + j; this.lib.push(Object.assign({ sk, id: sk + (i + 1), tier: i < 8 ? 1 : i < 16 ? 2 : 3 }, x)); });
   },
   vars: {},
   variants(obj) { this.vars = obj; },

@@ -10,7 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "22";
+const APP_VERSION = "23";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -56,7 +56,7 @@ const CH = id => IX.ch.find(c => c.id === id);
 const blank = () => ({
   v: 1, xp: { q: 0, c: 0, e: 0, n: 0, s: 0 }, pos: 0, learned: {}, spoken: {}, chDone: {},
   log: {}, reviews: {}, missions: [], answers: {}, history: [], cur: null,
-  mem: {}, lastMain: "new", redoRun: 0, xpDev: {}, legacyOwner: "",
+  mem: {}, lastMain: "new", redoRun: 0, removed: [], xpDev: {}, legacyOwner: "",
   settings: { apiKey: "", provider: "anthropic", model: "", gradeApp: "claude", rate: 1, voice: "", transcript: true, ghToken: "", gistId: "", lastSync: 0 }, started: null, savedAt: 0
 });
 let S = blank();
@@ -117,9 +117,10 @@ function mergeStates(L, R) {
   const ms = new Map((M.missions || []).map(m => [m.key, m]));
   for (const m of R.missions || []) { const a = ms.get(m.key); if (!a || (m.done && !a.done)) ms.set(m.key, m); }
   M.missions = [...ms.values()].sort((a, b) => (a.key > b.key ? 1 : -1)).slice(-500);
-  const hk = h => [h.d, h.type, h.id, h.xp, h.score, h.kind, h.at || ""].join("|");
+  const hk = h => h.u || [h.d, h.type, h.id, h.xp, h.score, h.kind, h.at || ""].join("|");
+  M.removed = [...new Set([...(M.removed || []), ...(R.removed || [])])];
   const hs = new Map((M.history || []).map(h => [hk(h), h])); for (const h of R.history || []) if (!hs.has(hk(h))) hs.set(hk(h), h);
-  M.history = [...hs.values()].sort((a, b) => (a.d > b.d ? 1 : a.d < b.d ? -1 : 0)).slice(-5000);
+  M.history = [...hs.values()].filter(h => !M.removed.includes(hk(h))).sort((a, b) => (a.d > b.d ? 1 : a.d < b.d ? -1 : 0)).slice(-5000);
   M.xpDev = M.xpDev || {};
   for (const [dev, x] of Object.entries(R.xpDev || {})) { if (dev === DEVICE) continue; const a = M.xpDev[dev] || {}; M.xpDev[dev] = {}; for (const k of ORDER) M.xpDev[dev][k] = Math.max(a[k] || 0, x[k] || 0); }
   // A pre-multi-device backup carries one unnamed XP ledger. The device it came from claims it (legacyOwner) and from then on
@@ -218,6 +219,7 @@ function itemSkills(item) { return item.type === "challenge" ? CH(item.id).sk : 
 function itemTitle(item) { return item.type === "challenge" ? CH(item.id).t : T(item.id).t; }
 const typeLabel = { learn: "Learn + drill", speak: "Speaking drill", challenge: "Intersection challenge", mastery: "Mastery round", redo: "Strengthen" };
 function itemLabel(item) {
+  if (item.featured) return "New technique, added for you";
   if (item.redo) { const r = S.mem[item.id]; return "Strengthen" + (item.v ? " · " + VARY_LABEL[item.v] : "") + (r && r.last ? " · last " + r.last + "/5" : ""); }
   return typeLabel[item.mastery ? "mastery" : item.type];
 }
@@ -546,7 +548,19 @@ function dueStrengthen() {
 const VARY_LABEL = { orig: "Original scenario", v0: "New scenario", v1: "New scenario", teach: "Teach it back", real: "Real-life rehearsal", fresh: "Fresh AI scenario" };
 // Mostly new scenarios (9 per technique, cycled least-recent first), with a teach-back and a real-life rehearsal mixed in.
 function varyCycle() { return S.settings.apiKey ? ["v", "v", "teach", "v", "fresh", "v", "real", "v", "orig"] : ["v", "v", "teach", "v", "v", "real", "v", "orig"]; }
-function nextVariant(id) { const n = (IX.vars[id] || []).length, r = S.mem[id]; return n ? "v" + (((r && r.vp) || 0) % n) : "orig"; }
+function nextVariant(id) {
+  const n = (IX.vars[id] || []).length; if (!n) return "orig";
+  const last = {}; let lastV = null, lastAt = -1;
+  for (const h of S.history || []) if (h.id === id && h.v && /^v\d+$/.test(h.v)) {
+    const i = +h.v.slice(1), at = h.at || 0; last[i] = Math.max(last[i] || 0, at || 1);
+    if (at >= lastAt) { lastAt = at; lastV = i; }
+  }
+  // Before scenarios were tracked in history, the first two were shown by an older rotation.
+  const r = S.mem[id]; if (r && (r.vi || 0) >= 1 && last[0] === undefined) last[0] = 1; if (r && (r.vi || 0) >= 3 && last[1] === undefined) last[1] = 1;
+  let best = null, bestAt = Infinity;
+  for (let i = 0; i < n; i++) { if (i === lastV && n > 1) continue; const at = last[i] === undefined ? -1 : last[i]; if (at < bestAt) { bestAt = at; best = i; } }
+  return "v" + best;
+}
 function strengthenItem(id) {
   if (id.startsWith("x")) return { type: "challenge", id, redo: true };
   const r = S.mem[id], cyc = varyCycle(), f = cyc[((r && r.vi) || 0) % cyc.length];
@@ -575,7 +589,7 @@ function variantScene(item) {
 })();
 
 /* ============ Session engine ============ */
-let view = "today", sess = null, libSkill = "q", missionLogAll = false;
+let view = "today", sess = null, libSkill = "q", missionLogAll = false, recentAll = false, confirmKey = null;
 function newSession(kind, item) {
   const s = { kind, date: today(), item, step: 0, gained: 0, reviews: [], ri: 0, draft: "", transcript: "", secs: 0, quizPick: null, revPick: null, score: null, gradeText: "", rubTicks: [], gradedBy: null, showModel: false };
   if (kind === "daily") {
@@ -585,6 +599,8 @@ function newSession(kind, item) {
   return s;
 }
 function nextItem() {
+  const feat = IX.lib.find(l => l.featured && !S.learned[l.id]);
+  if (feat && S.pos > 0) return { type: "learn", id: feat.id, featured: true };
   const due = dueStrengthen();
   const weakDue = due.filter(d => d.r.m < WEAK);
   if (S.pos < QUEUE.length) {
@@ -641,7 +657,7 @@ function finishSession() {
   if (sess.kind !== "practice" && !it.redo && !it.mastery && QUEUE[S.pos] && QUEUE[S.pos].id === it.id && QUEUE[S.pos].type === it.type) sess.advanced = true;
   if (sess.kind !== "practice" && !it.redo && !it.mastery && QUEUE[S.pos] && QUEUE[S.pos].id === it.id && QUEUE[S.pos].type === it.type) S.pos++;
   S.log[d] = (S.log[d] || 0) + 1;
-  S.history.push({ d, type: it.type, id: it.id, xp: sess.gained, score: sess.score, kind: sess.kind, adv: !!sess.advanced, at: Date.now() });
+  S.history.push({ d, type: it.type, id: it.id, xp: sess.gained, score: sess.score, kind: sess.kind, adv: !!sess.advanced, at: Date.now(), v: it.v || null, u: Math.random().toString(36).slice(2, 10) });
   if (S.history.length > 5000) S.history = S.history.slice(-5000);
   sess.finished = true;
   syncSoon();
@@ -836,6 +852,15 @@ function progressView() {
         return `<div class="logrow" style="--k:var(--${k})"><span class="box">✓</span><span><span>${esc(m.text)}</span><small>${new Date((m.doneDate || m.date) + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" })} · ${SK[k].name} · ${esc(t ? t.t : "")}</small></span><button class="link small" data-reopen="${esc(m.key)}">Reopen</button></div>`; }).join("")}</div>
       ${done.length > 8 ? `<button class="link small" data-logall>${missionLogAll ? "Show fewer" : "Show all " + done.length}</button>` : ""}</section>`;
   })()}
+  ${(() => {
+    const recent = S.history.slice().sort((a, b) => (b.at || 0) - (a.at || 0) || (b.d > a.d ? 1 : -1)).slice(0, recentAll ? 60 : 8);
+    if (!recent.length) return "";
+    return `<section class="panel recentpanel"><div class="row2"><h3>Recent plays</h3><span class="small muted">Tap Remove to undo a mistake</span></div><div>${recent.map(h => {
+      const k = playKey(h), sk = T(h.id) ? [T(h.id).sk] : CH(h.id) ? CH(h.id).sk : ["q"];
+      return `<div class="logrow" style="--k:var(--${sk[0]})"><span class="box">${h.score != null && h.score > 0 ? h.score : "✓"}</span><span><span>${esc(itemTitle({ type: T(h.id) ? "learn" : "challenge", id: h.id }))}</span><small>${new Date(h.d + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" })} · ${h.score != null && h.score > 0 ? h.score + "/5" : "no score"} · +${h.xp || 0} xp</small></span>
+        ${confirmKey === k ? `<span class="btnrow" style="flex-wrap:nowrap;gap:6px"><button class="link small" style="color:var(--bad)" data-rmyes="${esc(k)}">Remove</button><button class="link small" data-rmno>Keep</button></span>` : `<button class="link small" data-rm="${esc(k)}">Remove</button>`}</div>`; }).join("")}</div>
+      ${S.history.length > 8 ? `<button class="link small" data-recentall>${recentAll ? "Show fewer" : "Show more"}</button>` : ""}</section>`;
+  })()}
   <section class="panel heatpanel"><div class="row2"><h3>Last 12 weeks</h3><span class="small muted mono">${sessions} plays</span></div><div class="heat">${heat}</div></section>`;
 }
 
@@ -954,6 +979,15 @@ function quizStep() {
 }
 function drillStep() {
   const t = T(sess.item.id);
+  if (t.form) {
+    sayClips.drill = t.id + "_drill"; sayTexts.drill = t.drill;
+    const f = sess.formVals || {};
+    return `<div class="eyebrow">Structured drill · 5 min</div><h2>${esc(t.drill)}</h2>${listenBtn("drill", "Read it to me")}
+      <p class="small muted">Work through each part. Rough notes are fine; what matters is that every part is there.</p>
+      ${t.form.map(([lab, hint], i) => `<div class="field"><label for="ff${i}">${i + 1}. ${esc(lab)}</label><textarea id="ff${i}" data-ff="${i}" style="min-height:80px" placeholder="${esc(hint)}">${esc(f[i] || "")}</textarea></div>`).join("")}
+      <button class="btn wide" data-drilldone>Get graded →</button>
+      <p class="small muted">Skipping? <button class="link" data-skipdrill>Skip the drill</button></p>`;
+  }
   sayClips.drill = t.id + "_drill"; sayTexts.drill = t.drill;
   return `<div class="eyebrow">Written drill · 2–3 min</div><h2>${esc(t.drill)}</h2>${listenBtn("drill", "Read it to me")}
     <textarea id="ans" placeholder="Write it out, or tap the mic on your keyboard to dictate. Rough is fine.">${esc(sess.draft)}</textarea>
@@ -1103,6 +1137,10 @@ function bind() {
     const gm = $("[data-gomissions]"); if (gm) gm.onclick = () => { view = "progress"; render(); setTimeout(() => { const el = $("#missionlog"); if (el) el.scrollIntoView({ behavior: "smooth" }); }, 50); };
   }
   if (view === "progress") {
+    $$("[data-rm]").forEach(b => b.onclick = () => { confirmKey = b.dataset.rm; render(); const el = $(".recentpanel"); if (el) el.scrollIntoView({ block: "nearest" }); });
+    $$("[data-rmno]").forEach(b => b.onclick = () => { confirmKey = null; render(); });
+    $$("[data-rmyes]").forEach(b => b.onclick = () => { const k = b.dataset.rmyes; confirmKey = null; removePlay(k); });
+    const ra = $("[data-recentall]"); if (ra) ra.onclick = () => { recentAll = !recentAll; render(); };
     $$("[data-reopen]").forEach(b => b.onclick = () => reopenMission(b.dataset.reopen));
     const la = $("[data-logall]"); if (la) la.onclick = () => { missionLogAll = !missionLogAll; render(); const el = $("#missionlog"); if (el) el.scrollIntoView(); };
   }
@@ -1219,7 +1257,16 @@ function bindSession() {
     award(t.sk, i === t.q[0][2] ? 10 : 3); save(); render();
   });
   const ans = $("#ans"); if (ans) ans.oninput = () => { if (curStep() === "grade" && sess.item.type !== "learn") sess.transcript = ans.value; else sess.draft = ans.value; save(); };
+  $$("[data-ff]").forEach(ta => ta.oninput = () => { sess.formVals = sess.formVals || {}; sess.formVals[ta.dataset.ff] = ta.value; save(); });
   const dd = $("[data-drilldone]"); if (dd) dd.onclick = () => {
+    const tt = T(sess.item.id);
+    if (tt && tt.form) {
+      const vals = tt.form.map((_, i) => ($("#ff" + i) || {}).value || "");
+      const empty = vals.map((v, i) => v.trim() ? null : tt.form[i][0]).filter(Boolean);
+      if (empty.length) { toast("Fill in: " + empty.join(", ") + ". Even one line each."); return; }
+      sess.draft = tt.form.map(([lab], i) => lab + ": " + vals[i].trim()).join("\n\n");
+      S.answers[sess.item.id] = sess.draft; award(sks, 15); advance(); return;
+    }
     sess.draft = $("#ans").value.trim();
     if (sess.draft.length < 15) { toast("Write a bit more first, even rough notes."); return; }
     S.answers[sess.item.id] = sess.draft; award(sks, 10); advance();
@@ -1285,6 +1332,24 @@ function bindSession() {
     advance();
   };
   const ms = $("[data-mskip]"); if (ms) ms.onclick = advance;
+}
+
+/* ============ Removing a play (e.g. an accidental score) ============ */
+const playKey = h => h.u || [h.d, h.type, h.id, h.xp, h.score, h.kind, h.at || ""].join("|");
+function rebuildMem(id) {
+  const keep = S.mem[id] ? { vi: S.mem[id].vi, vp: S.mem[id].vp } : {};
+  delete S.mem[id];
+  for (const h of S.history.filter(x => x.id === id && x.score > 0).sort((a, b) => (a.at || 0) - (b.at || 0))) applyGrade(id, h.score);
+  if (S.mem[id]) Object.assign(S.mem[id], keep);
+  else if (S.learned[id]) S.mem[id] = Object.assign({ m: 30, int: 1, n: 0, due: today() }, keep);
+}
+function removePlay(key) {
+  const h = S.history.find(x => playKey(x) === key); if (!h) return;
+  S.removed = S.removed || []; S.removed.push(key);
+  S.history = S.history.filter(x => playKey(x) !== key);
+  if (S.log[h.d]) { S.log[h.d]--; if (!S.log[h.d]) delete S.log[h.d]; }
+  rebuildMem(h.id); S.xp = deriveXP();
+  save(); syncSoon(); render(); toast("Play removed. Scores and XP recalculated.");
 }
 
 /* ============ Missions ============ */
