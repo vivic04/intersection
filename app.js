@@ -10,7 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "24";
+const APP_VERSION = "25";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -599,6 +599,11 @@ function newSession(kind, item) {
   }
   return s;
 }
+const PACE = {
+  explore: { name: "Explore", every: 3, weakOnly: true, note: "3 new topics, then 1 revisit. Only topics you scored 3 or lower come back early; the rest wait for Mastery mode." },
+  balanced: { name: "Balanced", every: 2, weakOnly: false, note: "2 new topics, then 1 revisit of anything due." },
+  deep: { name: "Deep", every: 1, weakOnly: false, note: "Alternate new topics and revisits. Slower, but everything sticks." }
+};
 function nextItem() {
   const feat = IX.lib.find(l => l.featured && !S.learned[l.id]);
   if (feat && Object.keys(S.learned).length) return { type: "learn", id: feat.id, featured: true };
@@ -606,11 +611,12 @@ function nextItem() {
   const weakDue = due.filter(d => d.r.m < WEAK);
   const ni = pathNext();
   if (ni >= 0) {
-    // Mix: two new plays, then one revisit. A big backlog of weak items (5+) tightens that to
-    // alternating, but a revisit never follows a revisit, so new topics keep flowing.
-    const run = S.newRun || 0;
-    const wantRedo = due.length && S.lastMain !== "redo" && (run >= 2 || (weakDue.length >= 5 && run >= 1));
-    if (wantRedo) return strengthenItem((weakDue[0] || due[0]).id);
+    // Pace (Settings): Explore = 3 new then 1 revisit, and only topics you scored 3 or lower come back early.
+    // Balanced = 2 new then 1 revisit of anything due. Deep = alternate. A revisit never follows a revisit.
+    const P = PACE[S.settings.pace] || PACE.explore, run = S.newRun || 0;
+    const pool = P.weakOnly ? due.filter(d => d.r.m < WEAK || (d.r.last || 0) <= 3) : due;
+    const wantRedo = pool.length && S.lastMain !== "redo" && run >= P.every;
+    if (wantRedo) return strengthenItem((P.weakOnly ? pool[0] : (weakDue[0] || due[0])).id);
     return QUEUE[ni];
   }
   if (due.length) return Object.assign(strengthenItem(due[0].id), { mastery: true });
@@ -911,6 +917,11 @@ function settingsView() {
     <p class="small muted mono" id="soundDiag">App version ${APP_VERSION}</p>
   </section>
   <section class="panel">
+    <h3>Pace</h3>
+    <div class="field"><label for="pace">How fast new topics arrive</label><select id="pace">${Object.entries(PACE).map(([k, p]) => `<option value="${k}" ${k === (st.pace || "explore") ? "selected" : ""}>${p.name}</option>`).join("")}</select></div>
+    <p class="small muted" id="paceNote">${(PACE[st.pace] || PACE.explore).note}</p>
+  </section>
+  <section class="panel">
     <h3>Daily nudge</h3>
     ${st.notifOn ? `<p class="small"><b style="color:var(--good)">● On.</b> <span class="muted">One notification at ${fmtHour(st.notifHour ?? 9)}, only on days you haven't played yet.</span></p>
       <div class="field"><label for="notifHour">Time</label><select id="notifHour">${Array.from({ length: 17 }, (_, i) => i + 6).map(h => `<option value="${h}" ${h === (st.notifHour ?? 9) ? "selected" : ""}>${fmtHour(h)}</option>`).join("")}</select></div>
@@ -1206,6 +1217,7 @@ function bindSettings() {
     catch (e) { no.disabled = false; no.textContent = "Turn on daily nudge"; $("#notifMsg").innerHTML = `<span style="color:var(--bad)">${esc(e.message || "Couldn't turn on notifications.")}</span>`; }
   };
   const nf = $("#notifOff"); if (nf) nf.onclick = async () => { await disableNotifications(); toast("Daily nudge off"); render(); };
+  const pc = $("#pace"); if (pc) pc.onchange = e => { S.settings.pace = e.target.value; save(); syncSoon(); $("#paceNote").textContent = PACE[S.settings.pace].note; toast("Pace set to " + PACE[S.settings.pace].name); };
   const nh = $("#notifHour"); if (nh) nh.onchange = async e => { S.settings.notifHour = +e.target.value; save(); try { await writePushFile(); toast("Nudge moved to " + fmtHour(S.settings.notifHour)); } catch (err) { toast(err.message); } };
   const np = $("#notifPreview"); if (np) np.onclick = async () => {
     try { const reg = await navigator.serviceWorker.ready; const n = nextUpInfo() || {};
