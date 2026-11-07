@@ -10,7 +10,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "23";
+const APP_VERSION = "24";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -24,31 +24,23 @@ function buildQueue() {
         const t = IX.lib.find(l => l.sk === sk && l.tier === tier && IX.lib.filter(x => x.sk === sk && x.tier === tier).indexOf(l) === i);
         if (t) learn.push(t.id);
       }
+  // v24: the path is new material only. Spoken practice of each technique now comes through revisits
+  // (in a new scenario each time), so the path no longer spends a slot replaying what you just learned.
   const q = [];
-  const pendingSpeak = [];
   let li = 0, ci = 0, slot = 0;
-  while (li < learn.length || pendingSpeak.length) {
+  while (li < learn.length) {
     slot++;
-    if (slot % 7 === 0 && ci < IX.ch.length) { q.push({ type: "challenge", id: IX.ch[ci++].id }); continue; }
-    const due = pendingSpeak.find(p => p.at <= slot);
-    if (due && (slot % 2 === 0 || li >= learn.length)) {
-      pendingSpeak.splice(pendingSpeak.indexOf(due), 1);
-      q.push({ type: "speak", id: due.id });
-      continue;
-    }
-    if (li < learn.length) {
-      q.push({ type: "learn", id: learn[li] });
-      pendingSpeak.push({ id: learn[li], at: slot + 4 });
-      li++;
-    } else if (pendingSpeak.length) {
-      const p = pendingSpeak.shift();
-      q.push({ type: "speak", id: p.id });
-    }
+    if (slot % 4 === 0 && ci < IX.ch.length) q.push({ type: "challenge", id: IX.ch[ci++].id });
+    else q.push({ type: "learn", id: learn[li++] });
   }
   while (ci < IX.ch.length) q.push({ type: "challenge", id: IX.ch[ci++].id });
   return q;
 }
 const QUEUE = buildQueue();
+// Path position is derived from what you've actually done, so it survives queue changes and device merges.
+const qDone = q => q.type === "learn" ? !!S.learned[q.id] : !!S.chDone[q.id];
+function pathNext() { return QUEUE.findIndex(q => !qDone(q)); }
+function syncPos() { S.pos = QUEUE.filter(qDone).length; return S.pos; }
 const T = id => IX.lib.find(l => l.id === id);
 const CH = id => IX.ch.find(c => c.id === id);
 
@@ -181,7 +173,7 @@ async function syncPull(announce) {
     let merged = mergeStates(S, remote);
     S = deepMerge(blank(), merged); S.settings = keepSettings; S.cur = keepCur; S.treeSeen = keepTree;
     initLedger();
-    S.xp = deriveXP();
+    S.xp = deriveXP(); syncPos();
     S.settings.lastSync = Date.now();
     try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {}
     const changed = before !== JSON.stringify([S.log, S.pos, S.xpDev, Object.keys(S.mem).length]);
@@ -587,6 +579,15 @@ function variantScene(item) {
   for (const h of S.history) if (h.score != null && h.score > 0 && (T(h.id) || CH(h.id))) applyGrade(h.id, h.score);
   for (const id of Object.keys(S.learned)) if (!S.mem[id]) S.mem[id] = { m: 40, int: 2, n: 0, due: today() };
 })();
+// v24 repair: skipped drills used to be recorded as 1/5. Recalculate any technique that has one.
+(function repairSkips() {
+  syncPos();
+  if (S.fix24) return;
+  const ids = new Set(S.history.filter(h => h.score === 0 && S.mem[h.id]).map(h => h.id));
+  // Keep the grade count so this repaired record wins the merge against an older synced copy.
+  ids.forEach(id => { const n = S.mem[id].n || 0; rebuildMem(id); if (S.mem[id]) { S.mem[id].n = Math.max(n, S.mem[id].n || 0); S.mem[id].at = today(); } });
+  S.fix24 = true; save();
+})();
 
 /* ============ Session engine ============ */
 let view = "today", sess = null, libSkill = "q", missionLogAll = false, recentAll = false, confirmKey = null;
@@ -600,15 +601,17 @@ function newSession(kind, item) {
 }
 function nextItem() {
   const feat = IX.lib.find(l => l.featured && !S.learned[l.id]);
-  if (feat && S.pos > 0) return { type: "learn", id: feat.id, featured: true };
+  if (feat && Object.keys(S.learned).length) return { type: "learn", id: feat.id, featured: true };
   const due = dueStrengthen();
   const weakDue = due.filter(d => d.r.m < WEAK);
-  if (S.pos < QUEUE.length) {
-    // Mix: after a new session, revisit something due; a growing backlog of weak items gets priority,
-    // but never more than 2 strengthen sessions in a row so new material keeps flowing.
-    const wantRedo = due.length && (S.lastMain === "new" || (weakDue.length >= 4 && S.redoRun < 2));
+  const ni = pathNext();
+  if (ni >= 0) {
+    // Mix: two new plays, then one revisit. A big backlog of weak items (5+) tightens that to
+    // alternating, but a revisit never follows a revisit, so new topics keep flowing.
+    const run = S.newRun || 0;
+    const wantRedo = due.length && S.lastMain !== "redo" && (run >= 2 || (weakDue.length >= 5 && run >= 1));
     if (wantRedo) return strengthenItem((weakDue[0] || due[0]).id);
-    return QUEUE[S.pos];
+    return QUEUE[ni];
   }
   if (due.length) return Object.assign(strengthenItem(due[0].id), { mastery: true });
   // Mastery mode: cycle back through spoken drills and challenges, least recently practiced first
@@ -644,18 +647,18 @@ function finishSession() {
     S.learned[it.id] = d;
   } else if (it.type === "speak") S.spoken[it.id] = d;
   else S.chDone[it.id] = d;
-  if (sess.score != null) applyGrade(it.id, sess.score || 1);
+  if (sess.score > 0) applyGrade(it.id, sess.score); // a skipped drill (score 0) isn't a grade
   if (it.v && S.mem[it.id]) {
     if (!it.direct) S.mem[it.id].vi = (S.mem[it.id].vi || 0) + 1;
     if (/^v\d+$/.test(it.v)) S.mem[it.id].vp = (S.mem[it.id].vp || 0) + 1;
   } else if (it.v && /^v\d+$/.test(it.v)) S.mem[it.id] = Object.assign(S.mem[it.id] || { m: 0, int: 1, n: 0, due: today() }, { vp: 1 });
   else if (it.type === "learn" && !S.mem[it.id]) S.mem[it.id] = { m: sess.quizPick === T(it.id).q[0][2] ? 35 : 20, int: 1, n: 0, due: addDays(d, 1) };
   if (sess.kind !== "practice") {
-    if (it.redo) { S.lastMain = "redo"; S.redoRun = (S.redoRun || 0) + 1; }
-    else { S.lastMain = "new"; S.redoRun = 0; }
+    if (it.redo) { S.lastMain = "redo"; S.redoRun = (S.redoRun || 0) + 1; S.newRun = 0; }
+    else { S.lastMain = "new"; S.redoRun = 0; S.newRun = (S.newRun || 0) + 1; }
   }
-  if (sess.kind !== "practice" && !it.redo && !it.mastery && QUEUE[S.pos] && QUEUE[S.pos].id === it.id && QUEUE[S.pos].type === it.type) sess.advanced = true;
-  if (sess.kind !== "practice" && !it.redo && !it.mastery && QUEUE[S.pos] && QUEUE[S.pos].id === it.id && QUEUE[S.pos].type === it.type) S.pos++;
+  const before = S.pos;
+  if (syncPos() > before && !it.redo && !it.mastery) sess.advanced = true;
   S.log[d] = (S.log[d] || 0) + 1;
   S.history.push({ d, type: it.type, id: it.id, xp: sess.gained, score: sess.score, kind: sess.kind, adv: !!sess.advanced, at: Date.now(), v: it.v || null, u: Math.random().toString(36).slice(2, 10) });
   if (S.history.length > 5000) S.history = S.history.slice(-5000);
@@ -716,13 +719,14 @@ function todayView() {
   if (doneToday && !resume) {
     heroBody = `<div class="eyebrow">Today · done</div><h2>Nice. Today's play is done.</h2>
       <p class="small" style="opacity:.8">Up next: ${esc(itemTitle(item))} · ${itemLabel(item)}</p>
-      <div class="btnrow"><button class="btn" data-bonus>Run a bonus play</button></div>`;
+      <div class="btnrow"><button class="btn" data-bonus>Run a bonus play</button>${item.redo && pathNext() >= 0 ? `<button class="btn ghost" data-newtopic="bonus">Learn a new topic</button>` : ""}</div>`;
   } else {
     heroBody = `<div class="eyebrow">${resume ? "Resume today's play" : "Today's play"} · ${item.redo ? "Revisit" : "Play " + (item.mastery ? "∞" : dayN) + " of " + QUEUE.length}</div>
       <h2>${esc(itemTitle(item))}</h2>
       <div class="chips">${sks.map(k => `<span class="chip" style="--k:var(--${k});background:color-mix(in srgb,var(--${k}) 30%,transparent);color:var(--bg)">${SK[k].name}</span>`).join("")}</div>
       <div class="meta"><span>${itemLabel(item)}</span><span>~5 min</span>${dueN ? `<span>+ ${Math.min(2, dueN)} quick review${dueN > 1 ? "s" : ""}</span>` : ""}</div>
-      <button class="btn" data-start>${resume ? "Continue play" : "Start play"}</button>`;
+      <button class="btn" data-start>${resume ? "Continue play" : "Start play"}</button>
+      ${!resume && item.redo && pathNext() >= 0 ? `<p class="small" style="opacity:.8;margin-top:10px">Rather explore? <button class="link" data-newtopic="daily" style="color:inherit;text-decoration:underline">Learn a new topic instead</button></p>` : ""}`;
   }
   return `
   <header class="top">
@@ -1132,6 +1136,7 @@ function bind() {
     const tr = $("#treeReplay"); if (tr) tr.onclick = () => Tree.mount($("#tree"), true);
     const st = $("[data-start]"); if (st) st.onclick = () => startSession(S.cur && !S.cur.finished && S.cur.date === today() ? S.cur.kind : "daily");
     const bo = $("[data-bonus]"); if (bo) bo.onclick = () => startSession("bonus");
+    $$("[data-newtopic]").forEach(b => b.onclick = () => { const i = pathNext(); if (i >= 0) startSession(b.dataset.newtopic, QUEUE[i]); });
     $$("[data-lib]").forEach(b => b.onclick = () => { libSkill = b.dataset.lib; view = "library"; render(); scrollTo(0, 0); });
     $$("[data-mission]").forEach(b => b.onclick = () => completeMission(b.dataset.mission, b));
     const gm = $("[data-gomissions]"); if (gm) gm.onclick = () => { view = "progress"; render(); setTimeout(() => { const el = $("#missionlog"); if (el) el.scrollIntoView({ behavior: "smooth" }); }, 50); };
