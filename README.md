@@ -10,4 +10,4 @@ A free, installable daily trainer for six soft skills: asking questions, communi
 
 Install: open the site in Safari on iPhone → Share → Add to Home Screen. Progress is stored on the device; use Settings → Copy backup now and then.
 
-Publishing: the live site is served from the `gh-pages` branch. After pushing to `main`, also run `git push origin main:gh-pages` (or switch GitHub Pages to deploy from `main` in Settings → Pages).
+Publishing: every push to `main` deploys through `.github/workflows/publish.yml` (repo Settings → Pages → Source must be "GitHub Actions"). The old `gh-pages` branch deploy timed out at 10 minutes once the audio library grew.

@@ -1,0 +1,36 @@
+# Publishes the site to GitHub Pages on every push to main.
+# Replaces the default branch deploy, whose 10-minute deploy timeout the site (with ~1,700 audio clips) outgrew.
+# One-time setup: repo Settings → Pages → Source: "GitHub Actions".
+name: Publish site
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage the site (app files only, no repo tooling)
+        run: |
+          mkdir -p _site
+          cp -r index.html app.js app.css tree.js sw.js manifest.webmanifest content icons audio .nojekyll _site/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
+        with:
+          timeout: 2400000   # 40 minutes, instead of the default 10
