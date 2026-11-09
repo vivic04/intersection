@@ -9,3 +9,5 @@ A free, installable daily trainer for six soft skills: asking questions, communi
 - Grading: auto-graded quizzes; written and spoken answers graded by Claude (in the Claude app for free, or instantly in-app with an optional API key)
 
 Install: open the site in Safari on iPhone → Share → Add to Home Screen. Progress is stored on the device; use Settings → Copy backup now and then.
+
+Publishing: the live site is served from the `gh-pages` branch. After pushing to `main`, also run `git push origin main:gh-pages` (or switch GitHub Pages to deploy from `main` in Settings → Pages).
