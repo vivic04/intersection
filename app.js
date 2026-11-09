@@ -11,7 +11,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "26";
+const APP_VERSION = "27";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -603,7 +603,7 @@ function variantScene(item) {
 })();
 
 /* ============ Session engine ============ */
-let view = "today", sess = null, libSkill = "q", missionLogAll = false, recentAll = false, confirmKey = null;
+let view = "today", sess = null, libSkill = "m", missionLogAll = false, recentAll = false, confirmKey = null;
 function newSession(kind, item) {
   const s = { kind, date: today(), item, step: 0, gained: 0, reviews: [], ri: 0, draft: "", transcript: "", secs: 0, quizPick: null, revPick: null, score: null, gradeText: "", rubTicks: [], gradedBy: null, showModel: false };
   if (kind === "daily") {
@@ -770,11 +770,27 @@ function todayView() {
   </section>`;
 }
 
+// Moments: situation → move cheat sheet, the first stop in the Library.
+let momentQ = "";
+function momentsView() {
+  const q = momentQ.trim().toLowerCase();
+  const hit = m => !q || (m.when + " " + m.move + " " + (m.k || "") + " " + m.ids.map(id => (T(id) || {}).t || "").join(" ")).toLowerCase().includes(q);
+  let html = "";
+  for (const g of IX.moments || []) {
+    const items = g.items.filter(hit); if (!items.length) continue;
+    html += `<section class="panel"><div class="eyebrow tier">${esc(g.g)}</div><div class="moments">${items.map(m => `<div class="moment"><div class="when">${esc(m.when)}</div><div class="move">${esc(m.move)}</div><div class="chips">${m.ids.filter(T).map(id => { const t = T(id); return `<button class="chip" style="--k:var(--${t.sk})" data-open="${id}">${esc(t.t)}</button>`; }).join("")}</div></div>`).join("")}</div></section>`;
+  }
+  return html || `<p class="muted small">No moment matches "${esc(momentQ)}". Try one word, like "vague", "blank" or "email".</p>`;
+}
 function libraryView() {
+  if (libSkill === "m") return `<header><div class="eyebrow">Situation → move</div><h1>Library</h1></header>
+  <div class="seg">${libSegs("m")}</div>
+  <input id="momentq" class="msearch" type="search" placeholder="What's happening? e.g. vague, pushback, blank" value="${esc(momentQ)}">
+  <div id="momentlist">${momentsView()}</div>`;
   const k = libSkill, list = IX.lib.filter(l => l.sk === k);
   const chs = IX.ch.filter(c => c.sk.includes(k));
   let html = `<header><div class="eyebrow">${IX.lib.length} techniques · ${IX.ch.length} challenges</div><h1>Library</h1></header>
-  <div class="seg" style="--k:var(--${k})">${ORDER.map(s => `<button class="${s === k ? "sel" : ""}" style="--k:var(--${s})" data-seg="${s}">${SK[s].name}</button>`).join("")}</div>
+  <div class="seg" style="--k:var(--${k})">${libSegs(k)}</div>
   <p class="muted small">Practise anything here any time. Practice earns XP but doesn't move your daily path forward.</p>`;
   for (let tier = 1; tier <= 3; tier++) {
     if (!list.some(l => l.tier === tier)) continue;
@@ -790,6 +806,7 @@ function libraryView() {
   return html + `</div></section>`;
 }
 
+function libSegs(k) { return `<button class="${k === "m" ? "sel" : ""}" style="--k:var(--accent)" data-seg="m">Moments</button>` + ORDER.map(s => `<button class="${s === k ? "sel" : ""}" style="--k:var(--${s})" data-seg="${s}">${SK[s].name}</button>`).join(""); }
 function libDetail(id) {
   const t = T(id);
   view = "detail";
@@ -1177,7 +1194,9 @@ function bind() {
   if (view === "progress") $$("[data-strength]").forEach(b => b.onclick = () => startSession("practice", strengthenItem(b.dataset.strength)));
   if (view === "library") {
     $$("[data-seg]").forEach(b => b.onclick = () => { libSkill = b.dataset.seg; render(); });
-    $$("[data-open]").forEach(b => b.onclick = () => libDetail(b.dataset.open));
+    const bindOpen = () => $$("[data-open]").forEach(b => b.onclick = () => libDetail(b.dataset.open));
+    bindOpen();
+    const mq = $("#momentq"); if (mq) mq.oninput = () => { momentQ = mq.value; $("#momentlist").innerHTML = momentsView(); bindOpen(); };
     $$("[data-opench]").forEach(b => b.onclick = () => startSession("practice", { type: "challenge", id: b.dataset.opench }));
   }
   if (view === "settings") bindSettings();

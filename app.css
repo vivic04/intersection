@@ -268,3 +268,13 @@ body.insession .tabs{display:none}
 .livebox{display:flex;flex-direction:column;gap:8px;border-top:1px dashed var(--line);padding-top:14px}
 
 .recentpanel .logrow .box{font-family:var(--mono);font-size:.75rem}
+
+/* Moments: situation → move cheat sheet */
+.msearch{width:100%;box-sizing:border-box;border:1.5px solid var(--line);background:var(--surface);color:inherit;border-radius:12px;padding:12px 14px;font:inherit;margin:4px 0 12px}
+.moments{display:flex;flex-direction:column}
+.moment{padding:12px 0;border-top:1px solid var(--line)}
+.moment:first-child{border-top:0;padding-top:4px}
+.moment .when{font-size:.85rem;color:var(--muted);font-weight:600}
+.moment .move{font-weight:700;margin:3px 0 8px;line-height:1.35}
+.moment .chips{display:flex;flex-wrap:wrap;gap:6px}
+.moment .chip{border:0;cursor:pointer;background:color-mix(in srgb,var(--k) 16%,transparent);color:var(--k);font-weight:600}
