@@ -1,6 +1,6 @@
 # Intersection
 
-A free, installable daily trainer for five soft skills: asking questions, communication, execution, negotiation and sales.
+A free, installable daily trainer for six soft skills: asking questions, communication, execution, negotiation, sales, and having a view (forming an opinion fast and saying it clearly).
 
 - 120 techniques from primary sources, each with a lesson, two scenario quizzes, a written drill with a model answer, a spoken drill with a rubric, and a real-world mission
 - 40 cross-skill "intersection" challenges

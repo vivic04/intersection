@@ -10,5 +10,10 @@ window.IX = {
   moreVariants(obj) { for (const [id, arr] of Object.entries(obj)) this.vars[id] = (this.vars[id] || []).concat(arr); },
   challenges(arr) {
     this.ch = arr.map((x, i) => Object.assign({ id: "x" + (i + 1) }, x));
+  },
+  // Appends challenges after the original list, so existing challenge ids never shift.
+  moreChallenges(arr) {
+    const base = this.ch.length;
+    arr.forEach((x, i) => this.ch.push(Object.assign({ id: "x" + (base + i + 1) }, x)));
   }
 };

@@ -1,16 +1,17 @@
 "use strict";
 /* ============ Constants ============ */
-const ORDER = ["q", "c", "e", "n", "s"];
+const ORDER = ["q", "c", "e", "n", "s", "v"];
 const SK = {
   q: { name: "Questions", tag: "Ask the right question" },
   c: { name: "Comms", tag: "Be understood" },
   e: { name: "Execution", tag: "Get it done" },
   n: { name: "Negotiation", tag: "Grow the pie, then claim" },
-  s: { name: "Sales", tag: "Move people to yes" }
+  s: { name: "Sales", tag: "Move people to yes" },
+  v: { name: "Have a View", tag: "Form it fast, say it clearly" }
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "25";
+const APP_VERSION = "26";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -40,13 +41,25 @@ const QUEUE = buildQueue();
 // Path position is derived from what you've actually done, so it survives queue changes and device merges.
 const qDone = q => q.type === "learn" ? !!S.learned[q.id] : !!S.chDone[q.id];
 function pathNext() { return QUEUE.findIndex(q => !qDone(q)); }
+// A skill added after you started (View, in v26) would otherwise fill every new slot until it caught up.
+// Instead it takes every other new topic: the next new item alternates between it and the rest of the path.
+const LATE = "v";
+const isLate = q => q.type === "learn" && T(q.id) && T(q.id).sk === LATE;
+function pathPick() {
+  const ni = pathNext(); if (ni < 0) return -1;
+  const li = QUEUE.findIndex(q => !qDone(q) && isLate(q)), oi = QUEUE.findIndex(q => !qDone(q) && !isLate(q));
+  if (li < 0 || oi < 0) return ni;
+  const lastNew = [...(S.history || [])].reverse().find(h => h.type === "learn" || h.type === "challenge");
+  const lastWasLate = !!lastNew && lastNew.type === "learn" && T(lastNew.id) && T(lastNew.id).sk === LATE;
+  return lastWasLate ? oi : li;
+}
 function syncPos() { S.pos = QUEUE.filter(qDone).length; return S.pos; }
 const T = id => IX.lib.find(l => l.id === id);
 const CH = id => IX.ch.find(c => c.id === id);
 
 /* ============ State ============ */
 const blank = () => ({
-  v: 1, xp: { q: 0, c: 0, e: 0, n: 0, s: 0 }, pos: 0, learned: {}, spoken: {}, chDone: {},
+  v: 1, xp: { q: 0, c: 0, e: 0, n: 0, s: 0, v: 0 }, pos: 0, learned: {}, spoken: {}, chDone: {},
   log: {}, reviews: {}, missions: [], answers: {}, history: [], cur: null,
   mem: {}, lastMain: "new", redoRun: 0, removed: [], xpDev: {}, legacyOwner: "",
   settings: { apiKey: "", provider: "anthropic", model: "", gradeApp: "claude", rate: 1, voice: "", transcript: true, ghToken: "", gistId: "", lastSync: 0 }, started: null, savedAt: 0
@@ -79,19 +92,19 @@ let DEVICE = ""; try { DEVICE = localStorage.getItem(DEV_KEY) || ""; if (!DEVICE
 // XP is computed from the play history plus completed missions. Those records merge cleanly across devices
 // (a union with no duplicates), so XP can never be double-counted or lost by a sync.
 function deriveXP() {
-  const t = { q: 0, c: 0, e: 0, n: 0, s: 0 };
+  const t = { q: 0, c: 0, e: 0, n: 0, s: 0, v: 0 };
   const sks = id => { const x = T(id); if (x) return [x.sk]; const c = CH(id); return c ? c.sk : []; };
   for (const h of S.history || []) { const ks = sks(h.id); if (!ks.length || !h.xp) continue; const each = Math.round(h.xp / ks.length); ks.forEach(k => t[k] = Math.max(0, t[k] + each)); }
   for (const m of S.missions || []) if (m.done && m.awarded) { const x = T(m.id); if (x) t[x.sk] += 15; }
   if (S.cur && !S.cur.finished && S.cur.gained) { const ks = sks(S.cur.item.id); ks.forEach(k => t[k] += Math.round(S.cur.gained / ks.length)); }
   return t;
 }
-function sumXP() { const t = { q: 0, c: 0, e: 0, n: 0, s: 0 }; for (const d of Object.values(S.xpDev || {})) for (const k in t) t[k] += d[k] || 0; S.xp = t; }
+function sumXP() { const t = { q: 0, c: 0, e: 0, n: 0, s: 0, v: 0 }; for (const d of Object.values(S.xpDev || {})) for (const k in t) t[k] += d[k] || 0; S.xp = t; }
 function initLedger() {
   S.xp = deriveXP(); return;
   S.xpDev = S.xpDev || {};
   if (!Object.keys(S.xpDev).length && Object.values(S.xp).some(v => v)) S.xpDev[DEVICE] = Object.assign({}, S.xp);
-  S.xpDev[DEVICE] = S.xpDev[DEVICE] || { q: 0, c: 0, e: 0, n: 0, s: 0 };
+  S.xpDev[DEVICE] = S.xpDev[DEVICE] || { q: 0, c: 0, e: 0, n: 0, s: 0, v: 0 };
   sumXP();
 }
 S.missions.forEach(m => { if (m.done && m.awarded === undefined) m.awarded = true; });
@@ -204,7 +217,7 @@ function addXP(sks, n) { const list = Array.isArray(sks) ? sks : [sks]; const ea
   { const before0 = Object.fromEntries(list.map(k => [k, lvl(S.xp[k] || 0)])); list.forEach(k => S.xp[k] = Math.max(0, (S.xp[k] || 0) + each));
     setTimeout(() => list.forEach(k => { const L = lvl(S.xp[k] || 0); if (L > before0[k]) toast(`🎉 ${SK[k].name} reached Level ${L} · ${rank(L)}`); }), 0); return n; }
   const before = Object.fromEntries(list.map(k => [k, lvl(S.xp[k] || 0)]));
-  setTimeout(() => list.forEach(k => { const L = lvl(S.xp[k] || 0); if (L > before[k]) toast(`🎉 ${SK[k].name} reached Level ${L} · ${rank(L)}`); }), 0); const mine = (S.xpDev = S.xpDev || {})[DEVICE] || (S.xpDev[DEVICE] = { q: 0, c: 0, e: 0, n: 0, s: 0 }); list.forEach(k => mine[k] = Math.max(0, (mine[k] || 0) + each)); sumXP(); return n; }
+  setTimeout(() => list.forEach(k => { const L = lvl(S.xp[k] || 0); if (L > before[k]) toast(`🎉 ${SK[k].name} reached Level ${L} · ${rank(L)}`); }), 0); const mine = (S.xpDev = S.xpDev || {})[DEVICE] || (S.xpDev[DEVICE] = { q: 0, c: 0, e: 0, n: 0, s: 0, v: 0 }); list.forEach(k => mine[k] = Math.max(0, (mine[k] || 0) + each)); sumXP(); return n; }
 function seeded(seed) { let x = Math.abs(seed) % 2147483647 || 7; return () => (x = x * 16807 % 2147483647) / 2147483647; }
 function hash(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) | 0; return h; }
 function itemSkills(item) { return item.type === "challenge" ? CH(item.id).sk : [T(item.id).sk]; }
@@ -609,7 +622,7 @@ function nextItem() {
   if (feat && Object.keys(S.learned).length) return { type: "learn", id: feat.id, featured: true };
   const due = dueStrengthen();
   const weakDue = due.filter(d => d.r.m < WEAK);
-  const ni = pathNext();
+  const ni = pathPick();
   if (ni >= 0) {
     // Pace (Settings): Explore = 3 new then 1 revisit, and only topics you scored 3 or lower come back early.
     // Balanced = 2 new then 1 revisit of anything due. Deep = alternate. A revisit never follows a revisit.
@@ -699,7 +712,7 @@ function rings(size = 150, opacity = true) {
   const cx = 75, cy = 75, R = 27, r = 40;
   let out = `<svg viewBox="0 0 150 150" width="${size}" height="${size}" aria-hidden="true">`;
   ORDER.forEach((k, i) => {
-    const a = -Math.PI / 2 + i * 2 * Math.PI / 5, x = cx + R * Math.cos(a), y = cy + R * Math.sin(a);
+    const a = -Math.PI / 2 + i * 2 * Math.PI / ORDER.length, x = cx + R * Math.cos(a), y = cy + R * Math.sin(a);
     const f = opacity ? Math.min(.5, .07 + (lvl(S.xp[k]) - 1) * .045) : .22;
     out += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" fill="var(--${k})" fill-opacity="${f.toFixed(2)}" stroke="var(--${k})" stroke-width="1.6"/>`;
   });
@@ -744,7 +757,7 @@ function todayView() {
     <div class="row2"><span class="small muted">${Tree.caption()}</span><button class="link small" id="treeReplay" style="white-space:nowrap">↻ Replay</button></div></section>
   ${install}
   <section class="panel skillspanel">
-    <div class="row2"><h3>Your five skills</h3><span class="small muted">Weakest: <b style="color:var(--${minK})">${SK[minK].name}</b></span></div>
+    <div class="row2"><h3>Your skills</h3><span class="small muted">Weakest: <b style="color:var(--${minK})">${SK[minK].name}</b></span></div>
     <div class="ledger">${ORDER.map(k => { const xp = S.xp[k], L = lvl(xp);
       return `<button class="lrow" style="--k:var(--${k})" data-lib="${k}"><span class="name"><i></i>${SK[k].name}</span><span class="lv"><span class="mono">L${L}</span> · ${rank(L)}</span><span class="bar"><span style="width:${lvlPct(xp)}%"></span></span></button>`; }).join("")}</div>
   </section>
@@ -764,6 +777,7 @@ function libraryView() {
   <div class="seg" style="--k:var(--${k})">${ORDER.map(s => `<button class="${s === k ? "sel" : ""}" style="--k:var(--${s})" data-seg="${s}">${SK[s].name}</button>`).join("")}</div>
   <p class="muted small">Practise anything here any time. Practice earns XP but doesn't move your daily path forward.</p>`;
   for (let tier = 1; tier <= 3; tier++) {
+    if (!list.some(l => l.tier === tier)) continue;
     html += `<section class="panel tierpanel" style="--k:var(--${k})"><div class="eyebrow tier">${TIER[tier]}</div><div>`;
     list.filter(l => l.tier === tier).forEach(l => {
       const st = memStatus(l.id), r = S.mem[l.id];
@@ -850,7 +864,7 @@ function progressView() {
     <p class="small muted">${left ? `${left} plays of new material left. ${eta}. After that, Mastery mode cycles your spoken drills and challenges, with spaced reviews throughout.` : "Path complete. Mastery mode is on."}</p></section>
   <section class="panel"><h3>Skills</h3><div class="ledger">${ORDER.map(k => { const xp = S.xp[k], L = lvl(xp);
     const lc = IX.lib.filter(l => l.sk === k && S.learned[l.id]).length;
-    return `<div class="lrow" style="--k:var(--${k})"><span class="name"><i></i>${SK[k].name}</span><span class="lv"><span class="mono">L${L}</span> · ${rank(L)} · ${xp} xp</span><span class="bar"><span style="width:${lvlPct(xp)}%"></span></span><span class="small muted">${lc}/24 techniques learned · ${lvlFloor(L + 1) - xp} xp to L${L + 1}</span></div>`; }).join("")}</div></section>
+    return `<div class="lrow" style="--k:var(--${k})"><span class="name"><i></i>${SK[k].name}</span><span class="lv"><span class="mono">L${L}</span> · ${rank(L)} · ${xp} xp</span><span class="bar"><span style="width:${lvlPct(xp)}%"></span></span><span class="small muted">${lc}/${IX.lib.filter(l => l.sk === k).length} techniques learned · ${lvlFloor(L + 1) - xp} xp to L${L + 1}</span></div>`; }).join("")}</div></section>
   ${(() => {
     const done = S.missions.filter(m => m.done).sort((a, b) => (b.doneDate || "").localeCompare(a.doneDate || "") || (b.key > a.key ? 1 : -1));
     if (!done.length) return "";
@@ -1147,7 +1161,7 @@ function bind() {
     const tr = $("#treeReplay"); if (tr) tr.onclick = () => Tree.mount($("#tree"), true);
     const st = $("[data-start]"); if (st) st.onclick = () => startSession(S.cur && !S.cur.finished && S.cur.date === today() ? S.cur.kind : "daily");
     const bo = $("[data-bonus]"); if (bo) bo.onclick = () => startSession("bonus");
-    $$("[data-newtopic]").forEach(b => b.onclick = () => { const i = pathNext(); if (i >= 0) startSession(b.dataset.newtopic, QUEUE[i]); });
+    $$("[data-newtopic]").forEach(b => b.onclick = () => { const i = pathPick(); if (i >= 0) startSession(b.dataset.newtopic, QUEUE[i]); });
     $$("[data-lib]").forEach(b => b.onclick = () => { libSkill = b.dataset.lib; view = "library"; render(); scrollTo(0, 0); });
     $$("[data-mission]").forEach(b => b.onclick = () => completeMission(b.dataset.mission, b));
     const gm = $("[data-gomissions]"); if (gm) gm.onclick = () => { view = "progress"; render(); setTimeout(() => { const el = $("#missionlog"); if (el) el.scrollIntoView({ behavior: "smooth" }); }, 50); };

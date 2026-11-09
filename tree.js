@@ -1,6 +1,6 @@
 "use strict";
 /* Growth tree for the Today screen.
-   Trunk grows with total plays; five branches (one per skill, in its colour) lengthen with that skill's XP;
+   Trunk grows with total plays; one branch per skill (, in its colour) lengthen with that skill's XP;
    each learned technique is a leaf, each mastered one a blossom. New growth animates in on open. */
 const Tree = (() => {
   let raf = 0, canvas = null, from = null, to = null, t0 = 0, swayOn = false;
@@ -44,7 +44,8 @@ const Tree = (() => {
       [-1, 1].forEach(s => { ctx.save(); ctx.translate(topX, topY + 2); ctx.rotate(s * 0.9 + sway); ctx.beginPath(); ctx.ellipse(s * 8, 0, 9, 4.5, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore(); });
     }
     // branches
-    const angles = [-1.05, -0.55, 0, 0.55, 1.05], attach = [0.55, 0.72, 1, 0.78, 0.6];
+    // Branches fan out evenly however many skills there are; the middle ones sit highest on the trunk.
+    const nB = ORDER.length, angles = ORDER.map((_, i) => nB === 1 ? 0 : -1.1 + 2.2 * i / (nB - 1)), attach = angles.map(a => 1 - 0.42 * Math.abs(a) / 1.1);
     const maxLen = Math.min(W * 0.4, H * 0.55);
     let born = 0;
     const newTotal = Math.max(1, Object.keys(to.leaves).filter(id => !from.leaves[id]).length);
