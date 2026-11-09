@@ -293,3 +293,22 @@ body.insession .tabs{display:none}
 .md.mastered{background:var(--good);border-color:var(--good)}
 .mlegend .md{margin:0 4px 0 8px}
 .mlegend .md:first-child{margin-left:0}
+
+/* Mind map on Progress */
+.mm{width:100%;height:auto;display:block;margin:6px 0 4px;overflow:visible}
+.mm-trunk{stroke:var(--line);stroke-width:2}
+.mm-twig{stroke:var(--line);stroke-width:1}
+.mm-twig.on{stroke:var(--accent);stroke-width:1.5}
+.mm-leaf{cursor:pointer}
+.mm-leaf .dot{fill:var(--surface);stroke:var(--line);stroke-width:1.5}
+.mm-leaf.learning .dot{fill:color-mix(in srgb,var(--accent) 35%,var(--surface));stroke:var(--accent)}
+.mm-leaf.earned .dot{fill:var(--accent);stroke:var(--accent)}
+.mm-leaf.mastered .dot{fill:var(--good);stroke:var(--good)}
+.mm-leaf.sel .dot{stroke:var(--text, currentColor);stroke-width:2.5}
+.mm-group circle{fill:var(--muted)}
+.mm-group text{font-size:11px;font-weight:700;fill:var(--muted);paint-order:stroke;stroke:var(--surface);stroke-width:4px;stroke-linejoin:round}
+.mm-core{fill:var(--accent)}
+.mm-core-t{font-size:11px;font-weight:800;fill:var(--on-accent)}
+.mm-label{font-size:11px;font-weight:600;fill:currentColor;paint-order:stroke;stroke:var(--surface);stroke-width:3px;stroke-linejoin:round}
+.mm-label.dim{fill:var(--muted)}
+#mmdetail .moment{border-top:1px solid var(--line);padding-top:10px}

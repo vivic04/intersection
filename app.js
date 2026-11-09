@@ -11,7 +11,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "28";
+const APP_VERSION = "29";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -603,7 +603,7 @@ function variantScene(item) {
 })();
 
 /* ============ Session engine ============ */
-let view = "today", sess = null, libSkill = "m", missionLogAll = false, recentAll = false, confirmKey = null;
+let view = "today", sess = null, libSkill = "q", missionLogAll = false, recentAll = false, confirmKey = null;
 function newSession(kind, item) {
   const s = { kind, date: today(), item, step: 0, gained: 0, reviews: [], ri: 0, draft: "", transcript: "", secs: 0, quizPick: null, revPick: null, score: null, gradeText: "", rubTicks: [], gradedBy: null, showModel: false };
   if (kind === "daily") {
@@ -793,6 +793,36 @@ function momentChart() {
     <p class="small muted mlegend"><i class="md mastered"></i>Mastered <i class="md earned"></i>Earned <i class="md learning"></i>Learning <i class="md locked"></i>Not started</p>
     <p class="small muted">A move is earned when its technique reaches Solid. Keep practising and the sheet fills in.</p></section>`;
 }
+let mapPick = null;
+// Mind map: you in the centre, situation groups around you, a node per move. Only earned moves get a label.
+function momentMap() {
+  const G = IX.moments || [], W = 470, H = 430, cx = W / 2, cy = H / 2, R1 = 74, R2 = 138;
+  const all = MOMENT_ALL(), n = all.filter(m => ["earned", "mastered"].includes(momentState(m))).length;
+  let lines = "", nodes = "", labels = "";
+  G.forEach((g, gi) => {
+    const ga = -Math.PI / 2 + gi * 2 * Math.PI / G.length, gx = cx + R1 * Math.cos(ga), gy = cy + R1 * Math.sin(ga);
+    const span = Math.min(1.1, 2 * Math.PI / G.length * 0.85);
+    lines += `<line x1="${cx}" y1="${cy}" x2="${gx.toFixed(1)}" y2="${gy.toFixed(1)}" class="mm-trunk"/>`;
+    g.items.forEach((m, i) => {
+      const st = momentState(m), got = st === "earned" || st === "mastered";
+      const a = ga + (g.items.length === 1 ? 0 : -span / 2 + span * i / (g.items.length - 1));
+      const r = R2 + (i % 2 ? 30 : 0), x = cx + r * Math.cos(a), y = cy + r * Math.sin(a), key = gi + "." + i, sel = mapPick === key;
+      lines += `<line x1="${gx.toFixed(1)}" y1="${gy.toFixed(1)}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" class="mm-twig ${got ? "on" : ""}"/>`;
+      nodes += `<g class="mm-leaf ${st} ${sel ? "sel" : ""}" data-mm="${key}"><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="14" fill="transparent"/><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${got ? 7 : 4}" class="dot"/></g>`;
+      if (got || sel) { const right = Math.cos(a) >= 0, lx = x + (right ? 10 : -10), ly = y + 3.5;
+        labels += `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="${right ? "start" : "end"}" class="mm-label ${got ? "" : "dim"}">${esc(m.s || m.when)}</text>`; }
+    });
+    nodes += `<g class="mm-group"><circle cx="${gx.toFixed(1)}" cy="${gy.toFixed(1)}" r="5"/><text x="${gx.toFixed(1)}" y="${(gy + (gy < cy ? -10 : 16)).toFixed(1)}" text-anchor="middle">${esc(g.gs || g.g)}</text></g>`;
+  });
+  nodes += `<circle cx="${cx}" cy="${cy}" r="22" class="mm-core"/><text x="${cx}" y="${cy + 4}" text-anchor="middle" class="mm-core-t">You</text>`;
+  let detail = `<p class="small muted">Tap a dot to see its move. Moves light up and get a label when their technique reaches Solid.</p>`;
+  if (mapPick) { const [gi, i] = mapPick.split(".").map(Number), m = G[gi] && G[gi].items[i];
+    if (m) { const st = momentState(m), got = st === "earned" || st === "mastered";
+      detail = `<div class="moment ${st}"><div class="when">${st === "mastered" ? "★ " : ""}${esc(m.when)}</div><div class="move ${got ? "" : "dim"}">${got ? esc(m.move) : st === "learning" ? "Get one of these to Solid to earn this move:" : "Learn one of these to start earning this move:"}</div><div class="chips">${m.ids.filter(T).map(id => `<button class="chip" style="--k:var(--${T(id).sk})" data-open="${id}">${esc(T(id).t)} · ${memStatus(id).label}</button>`).join("")}</div></div>`; } }
+  return `<section class="panel mmap"><div class="row2"><h3>Your map</h3><span class="small muted mono">${n}/${all.length} moves earned</span></div>
+    <svg viewBox="0 0 ${W} ${H}" class="mm" role="img" aria-label="Map of the moves you've earned">${lines}${nodes}${labels}</svg>
+    <div id="mmdetail">${detail}</div></section>`;
+}
 function momentsView() {
   const q = momentQ.trim().toLowerCase();
   const hit = m => !q || (m.when + " " + m.move + " " + (m.k || "") + " " + m.ids.map(id => (T(id) || {}).t || "").join(" ")).toLowerCase().includes(q);
@@ -811,11 +841,6 @@ function momentsView() {
     (rest ? `<section class="panel"><div class="eyebrow tier">Still to earn</div>${rest}</section>` : "");
 }
 function libraryView() {
-  if (libSkill === "m") return `<header><div class="eyebrow">Situation → move</div><h1>Library</h1></header>
-  <div class="seg">${libSegs("m")}</div>
-  ${momentChart()}
-  <input id="momentq" class="msearch" type="search" placeholder="What's happening? e.g. vague, pushback, blank" value="${esc(momentQ)}">
-  <div id="momentlist">${momentsView()}</div>`;
   const k = libSkill, list = IX.lib.filter(l => l.sk === k);
   const chs = IX.ch.filter(c => c.sk.includes(k));
   let html = `<header><div class="eyebrow">${IX.lib.length} techniques · ${IX.ch.length} challenges</div><h1>Library</h1></header>
@@ -835,7 +860,7 @@ function libraryView() {
   return html + `</div></section>`;
 }
 
-function libSegs(k) { return `<button class="${k === "m" ? "sel" : ""}" style="--k:var(--accent)" data-seg="m">Moments</button>` + ORDER.map(s => `<button class="${s === k ? "sel" : ""}" style="--k:var(--${s})" data-seg="${s}">${SK[s].name}</button>`).join(""); }
+function libSegs(k) { return ORDER.map(s => `<button class="${s === k ? "sel" : ""}" style="--k:var(--${s})" data-seg="${s}">${SK[s].name}</button>`).join(""); }
 function libDetail(id) {
   const t = T(id);
   view = "detail";
@@ -893,6 +918,7 @@ function progressView() {
     <div class="stat"><b class="mono">${bestStreak()}</b><span>Best streak</span></div>
     <div class="stat"><b class="mono">${avg}</b><span>Avg score (last 20)</span></div>
   </div>
+  ${momentMap()}
   ${(() => {
     const learnedIds = Object.keys(S.mem);
     if (!learnedIds.length) return "";
@@ -1220,7 +1246,11 @@ function bind() {
     $$("[data-reopen]").forEach(b => b.onclick = () => reopenMission(b.dataset.reopen));
     const la = $("[data-logall]"); if (la) la.onclick = () => { missionLogAll = !missionLogAll; render(); const el = $("#missionlog"); if (el) el.scrollIntoView(); };
   }
-  if (view === "progress") $$("[data-strength]").forEach(b => b.onclick = () => startSession("practice", strengthenItem(b.dataset.strength)));
+  if (view === "progress") {
+    $$("[data-strength]").forEach(b => b.onclick = () => startSession("practice", strengthenItem(b.dataset.strength)));
+    $$("[data-mm]").forEach(g => g.onclick = () => { mapPick = mapPick === g.dataset.mm ? null : g.dataset.mm; const y = scrollY; render(); scrollTo(0, y); });
+    $$(".mmap [data-open]").forEach(b => b.onclick = () => { view = "library"; libDetail(b.dataset.open); });
+  }
   if (view === "library") {
     $$("[data-seg]").forEach(b => b.onclick = () => { libSkill = b.dataset.seg; render(); });
     const bindOpen = () => $$("[data-open]").forEach(b => b.onclick = () => libDetail(b.dataset.open));
