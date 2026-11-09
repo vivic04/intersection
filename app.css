@@ -278,3 +278,18 @@ body.insession .tabs{display:none}
 .moment .move{font-weight:700;margin:3px 0 8px;line-height:1.35}
 .moment .chips{display:flex;flex-wrap:wrap;gap:6px}
 .moment .chip{border:0;cursor:pointer;background:color-mix(in srgb,var(--k) 16%,transparent);color:var(--k);font-weight:600}
+
+.moment .move.dim{color:var(--muted);font-weight:600;font-size:.9rem}
+.moment.locked .when,.moment.learning .when{opacity:.85}
+.msub{margin-top:14px}
+.mrows{display:flex;flex-direction:column;gap:8px;margin:12px 0 6px}
+.mrow{display:flex;align-items:center;gap:10px}
+.mg{flex:0 0 132px;font-size:.8rem;color:var(--muted);font-weight:600}
+.mdots{display:flex;gap:6px;flex-wrap:wrap}
+.md{display:inline-block;width:14px;height:14px;border-radius:50%;border:2px solid var(--accent);box-sizing:border-box;vertical-align:-2px}
+.md.locked{border-color:var(--line)}
+.md.learning{background:linear-gradient(90deg,var(--accent) 50%,transparent 50%)}
+.md.earned{background:var(--accent)}
+.md.mastered{background:var(--good);border-color:var(--good)}
+.mlegend .md{margin:0 4px 0 8px}
+.mlegend .md:first-child{margin-left:0}

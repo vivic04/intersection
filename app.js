@@ -11,7 +11,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "27";
+const APP_VERSION = "28";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -666,7 +666,9 @@ function finishSession() {
     S.learned[it.id] = d;
   } else if (it.type === "speak") S.spoken[it.id] = d;
   else S.chDone[it.id] = d;
+  const had = earnedSet();
   if (sess.score > 0) applyGrade(it.id, sess.score); // a skipped drill (score 0) isn't a grade
+  { const now = [...earnedSet()].filter(w => !had.has(w)); if (now.length) setTimeout(() => toast(`🗝 New move earned: ${now[0]}${now.length > 1 ? ` (+${now.length - 1} more)` : ""}`), 2800); }
   if (it.v && S.mem[it.id]) {
     if (!it.direct) S.mem[it.id].vi = (S.mem[it.id].vi || 0) + 1;
     if (/^v\d+$/.test(it.v)) S.mem[it.id].vp = (S.mem[it.id].vp || 0) + 1;
@@ -770,21 +772,48 @@ function todayView() {
   </section>`;
 }
 
-// Moments: situation → move cheat sheet, the first stop in the Library.
+// Moments: your cheat sheet. A move is earned once one of its techniques reaches Solid (strength ≥ WEAK);
+// mastered techniques mark it as mastered. Until then it shows what to learn to earn it.
 let momentQ = "";
+function momentState(m) {
+  const ids = m.ids.filter(T);
+  if (ids.some(id => isMastered(S.mem[id]))) return "mastered";
+  if (ids.some(id => S.mem[id] && S.mem[id].n && S.mem[id].m >= WEAK)) return "earned";
+  if (ids.some(id => S.learned[id] || S.mem[id])) return "learning";
+  return "locked";
+}
+const MOMENT_ALL = () => (IX.moments || []).flatMap(g => g.items);
+const earnedSet = () => new Set(MOMENT_ALL().filter(m => ["earned", "mastered"].includes(momentState(m))).map(m => m.when));
+function momentChart() {
+  const all = MOMENT_ALL(), n = all.filter(m => ["earned", "mastered"].includes(momentState(m))).length;
+  const rows = (IX.moments || []).map(g => `<div class="mrow"><span class="mg">${esc(g.g.replace(/^When /, ""))}</span><span class="mdots">${g.items.map(m => `<i class="md ${momentState(m)}" title="${esc(m.when)}"></i>`).join("")}</span></div>`).join("");
+  return `<section class="panel mchart"><div class="row2"><h3>Your cheat sheet</h3><span class="small muted mono">${n}/${all.length} earned</span></div>
+    <div class="bar" style="--k:var(--accent)"><span style="width:${Math.round(n / all.length * 100)}%"></span></div>
+    <div class="mrows">${rows}</div>
+    <p class="small muted mlegend"><i class="md mastered"></i>Mastered <i class="md earned"></i>Earned <i class="md learning"></i>Learning <i class="md locked"></i>Not started</p>
+    <p class="small muted">A move is earned when its technique reaches Solid. Keep practising and the sheet fills in.</p></section>`;
+}
 function momentsView() {
   const q = momentQ.trim().toLowerCase();
   const hit = m => !q || (m.when + " " + m.move + " " + (m.k || "") + " " + m.ids.map(id => (T(id) || {}).t || "").join(" ")).toLowerCase().includes(q);
-  let html = "";
+  const chips = m => `<div class="chips">${m.ids.filter(T).map(id => { const t = T(id); return `<button class="chip" style="--k:var(--${t.sk})" data-open="${id}">${esc(t.t)} · ${memStatus(id).label}</button>`; }).join("")}</div>`;
+  const card = m => { const st = momentState(m), got = st === "earned" || st === "mastered";
+    return `<div class="moment ${st}"><div class="when">${st === "mastered" ? "★ " : ""}${esc(m.when)}</div>${got ? `<div class="move">${esc(m.move)}</div>` : `<div class="move dim">${st === "learning" ? "Get one of these to Solid to earn this move:" : "Learn one of these to start earning this move:"}</div>`}${chips(m)}</div>`; };
+  let earned = "", rest = "";
   for (const g of IX.moments || []) {
     const items = g.items.filter(hit); if (!items.length) continue;
-    html += `<section class="panel"><div class="eyebrow tier">${esc(g.g)}</div><div class="moments">${items.map(m => `<div class="moment"><div class="when">${esc(m.when)}</div><div class="move">${esc(m.move)}</div><div class="chips">${m.ids.filter(T).map(id => { const t = T(id); return `<button class="chip" style="--k:var(--${t.sk})" data-open="${id}">${esc(t.t)}</button>`; }).join("")}</div></div>`).join("")}</div></section>`;
+    const got = items.filter(m => ["earned", "mastered"].includes(momentState(m))), todo = items.filter(m => !got.includes(m));
+    if (got.length) earned += `<section class="panel"><div class="eyebrow tier">${esc(g.g)}</div><div class="moments">${got.map(card).join("")}</div></section>`;
+    if (todo.length) rest += `<div class="eyebrow tier msub">${esc(g.g)}</div><div class="moments">${todo.map(card).join("")}</div>`;
   }
-  return html || `<p class="muted small">No moment matches "${esc(momentQ)}". Try one word, like "vague", "blank" or "email".</p>`;
+  if (!earned && !rest) return `<p class="muted small">No moment matches "${esc(momentQ)}". Try one word, like "vague", "blank" or "email".</p>`;
+  return (earned || `<p class="muted small">No moves earned${q ? " for that search" : ""} yet. They appear here as your techniques reach Solid.</p>`) +
+    (rest ? `<section class="panel"><div class="eyebrow tier">Still to earn</div>${rest}</section>` : "");
 }
 function libraryView() {
   if (libSkill === "m") return `<header><div class="eyebrow">Situation → move</div><h1>Library</h1></header>
   <div class="seg">${libSegs("m")}</div>
+  ${momentChart()}
   <input id="momentq" class="msearch" type="search" placeholder="What's happening? e.g. vague, pushback, blank" value="${esc(momentQ)}">
   <div id="momentlist">${momentsView()}</div>`;
   const k = libSkill, list = IX.lib.filter(l => l.sk === k);
