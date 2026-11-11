@@ -11,7 +11,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "29";
+const APP_VERSION = "30";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -268,6 +268,9 @@ const sayTexts = {}, sayClips = {};
 const NARRATORS = { heart: { name: "Heart · warm, female", dir: "" }, michael: { name: "Michael · calm, male", dir: "m" } };
 // Pre-recorded narration (audio/<key>.mp3). Plays through Silent mode; falls back to the device voice if a clip is missing.
 const player = new Audio(); player.preload = "none";
+// List of recorded clips per voice (audio/index.json, rebuilt whenever narration is added).
+let CLIPS = null;
+fetch("audio/index.json", { cache: "no-cache" }).then(r => r.ok ? r.json() : null).then(j => { if (j && j.f) CLIPS = j; }).catch(() => {});
 let playerBtn = null;
 function clearPlaying() { $$(".speakbtn").forEach(b => { b.classList.remove("on"); const sp = b.querySelector(".t"); if (sp) sp.textContent = b.dataset.label; }); playerBtn = null; }
 player.onended = player.onpause = clearPlaying;
@@ -278,7 +281,13 @@ function playClip(key, text, btn) {
   if (playerBtn === btn && !player.paused) { player.pause(); return; }
   setAudioSession("playback");
   clearPlaying();
-  const nar = NARRATORS[S.settings.narrator] || NARRATORS.heart;
+  let nar = NARRATORS[S.settings.narrator] || NARRATORS.heart;
+  // Known-missing clip: speak with the device voice right away, inside the tap. iOS blocks speech
+  // started later from a failed audio load, which is why Listen used to go silent.
+  if (CLIPS) {
+    const has = d => (CLIPS[d || "f"] || []).includes(key);
+    if (!has(nar.dir)) { if (has("")) nar = NARRATORS.heart; else { clearPlaying(); say(text, btn); return; } }
+  }
   let triedDefault = !nar.dir;
   player.onerror = () => {
     if (!triedDefault) { triedDefault = true; player.src = "audio/" + key + ".mp3"; player.play().catch(() => {}); return; }
