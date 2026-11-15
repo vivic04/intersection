@@ -312,3 +312,28 @@ body.insession .tabs{display:none}
 .mm-label{font-size:11px;font-weight:600;fill:currentColor;paint-order:stroke;stroke:var(--surface);stroke-width:3px;stroke-linejoin:round}
 .mm-label.dim{fill:var(--muted)}
 #mmdetail .moment{border-top:1px solid var(--line);padding-top:10px}
+
+/* When to use it + where it fits (v31) */
+.whencard{border-left:3px solid var(--k);background:color-mix(in srgb,var(--k) 7%,var(--surface));border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:6px;margin:4px 0}
+.whencard .wu{font-weight:650;line-height:1.4}
+.whencard .wn{color:var(--ink);opacity:.85}
+.whencard .wpairs{display:flex;flex-direction:column;gap:6px;margin-top:2px}
+.whencard .chips{flex-wrap:wrap}
+.wchip{border:0;cursor:default;white-space:normal;text-align:left}
+button.wchip{cursor:pointer}
+.wchip small{font-weight:500;opacity:.75;margin-left:2px}
+.wchip small::before{content:"· "}
+.fitmap .fm{width:100%;height:auto;display:block;color:var(--ink)}
+.fm-l{stroke-width:1.6;opacity:.7}
+.fm-l.alt{stroke-dasharray:5 4}
+.fm-l.sit{stroke-dasharray:1.5 4;stroke-linecap:round;stroke:var(--muted)!important}
+.fm-n.dim{opacity:.35}
+.fm-core{font-weight:800}
+
+
+
+.focuspanel{border-top:3px solid var(--k)}
+.focuspanel h3{margin:2px 0 0;color:var(--k)}
+.focuspanel .bar span{background:var(--k)}
+.focuspanel select{max-width:48%;font:inherit;font-size:.85rem;padding:6px 8px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--ink)}
+.fm-tag{font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;fill:var(--muted)}

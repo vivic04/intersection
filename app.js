@@ -11,7 +11,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "30";
+const APP_VERSION = "31";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -45,8 +45,41 @@ function pathNext() { return QUEUE.findIndex(q => !qDone(q)); }
 // Instead it takes every other new topic: the next new item alternates between it and the rest of the path.
 const LATE = "v";
 const isLate = q => q.type === "learn" && T(q.id) && T(q.id).sk === LATE;
+/* ---- Focus weeks (v31): a week of new topics from one skill, then the next skill ---- */
+// The week moves on after 7 days once you've done at least 3 new plays in it (so a missed week isn't skipped),
+// or straight away when that skill has nothing new left. Revisits of weak spots still mix in from any skill.
+const FOCUS_DAYS = 7, FOCUS_MIN = 3;
+const skLeft = sk => QUEUE.some(q => q.type === "learn" && !qDone(q) && T(q.id).sk === sk);
+const skLearned = sk => IX.lib.filter(t => t.sk === sk && S.learned[t.id]).length;
+const dayGap = (a, b) => Math.round((new Date(b + "T12:00:00") - new Date(a + "T12:00:00")) / 864e5);
+function focusOn() { return (S.settings.path || "focus") === "focus"; }
+function focusSkill() {
+  if (!focusOn()) return null;
+  const f = S.focus, ok = f && SK[f.sk];
+  const over = !ok || !skLeft(f.sk) || (dayGap(f.start, today()) >= FOCUS_DAYS && (f.n || 0) >= FOCUS_MIN);
+  if (over) {
+    let sk;
+    if (ok) { const i = ORDER.indexOf(f.sk); sk = ORDER.slice(i + 1).concat(ORDER.slice(0, i + 1)).find(skLeft); }
+    else sk = ORDER.filter(skLeft).sort((a, b) => skLearned(a) - skLearned(b))[0]; // start with the least covered skill
+    if (!sk) return null;
+    S.focus = { sk, start: today(), n: 0 };
+  }
+  return S.focus.sk;
+}
+function setFocus(sk) { S.focus = { sk, start: today(), n: 0 }; save(); syncSoon(); }
+function focusPick(sk) {
+  const n = (S.focus && S.focus.n) || 0;
+  // Every 4th new play in the week is a challenge that uses this skill, once you have a couple of its techniques
+  // and at least one technique from each other skill it mixes in.
+  if (n % 4 === 3 && skLearned(sk) >= 2) {
+    const ci = QUEUE.findIndex(q => q.type === "challenge" && !qDone(q) && CH(q.id).sk.includes(sk) && CH(q.id).sk.every(k => k === sk || skLearned(k) > 0));
+    if (ci >= 0) return ci;
+  }
+  return QUEUE.findIndex(q => q.type === "learn" && !qDone(q) && T(q.id).sk === sk);
+}
 function pathPick() {
   const ni = pathNext(); if (ni < 0) return -1;
+  const fs = focusSkill(); if (fs) { const fi = focusPick(fs); if (fi >= 0) return fi; }
   const li = QUEUE.findIndex(q => !qDone(q) && isLate(q)), oi = QUEUE.findIndex(q => !qDone(q) && !isLate(q));
   if (li < 0 || oi < 0) return ni;
   const lastNew = [...(S.history || [])].reverse().find(h => h.type === "learn" || h.type === "challenge");
@@ -132,6 +165,8 @@ function mergeStates(L, R) {
   // its own named ledger replaces it everywhere, so it's never counted twice or dropped by guesswork.
 
   M.pos = Math.max(M.pos || 0, R.pos || 0);
+  // Focus week: the newer one wins (a later start, or more progress in the same week).
+  if (R.focus && R.focus.sk && (!M.focus || R.focus.start > M.focus.start || (R.focus.start === M.focus.start && (R.focus.n || 0) > (M.focus.n || 0)))) M.focus = R.focus;
   if (!M.started || (R.started && R.started < M.started)) M.started = R.started;
   if ((R.savedAt || 0) > (M.savedAt || 0)) { M.lastMain = R.lastMain; M.redoRun = R.redoRun; }
   M.savedAt = Math.max(M.savedAt || 0, R.savedAt || 0);
@@ -636,9 +671,11 @@ function nextItem() {
     // Pace (Settings): Explore = 3 new then 1 revisit, and only topics you scored 3 or lower come back early.
     // Balanced = 2 new then 1 revisit of anything due. Deep = alternate. A revisit never follows a revisit.
     const P = PACE[S.settings.pace] || PACE.explore, run = S.newRun || 0;
-    const pool = P.weakOnly ? due.filter(d => d.r.m < WEAK || (d.r.last || 0) <= 3) : due;
+    let pool = P.weakOnly ? due.filter(d => d.r.m < WEAK || (d.r.last || 0) <= 3) : due;
+    const fsk = focusOn() && S.focus && S.focus.sk, inFocus = id => T(id) ? T(id).sk === fsk : CH(id) ? CH(id).sk.includes(fsk) : false;
+    if (fsk) pool = pool.filter(d => inFocus(d.id)).concat(pool.filter(d => !inFocus(d.id))); // this week's skill first
     const wantRedo = pool.length && S.lastMain !== "redo" && run >= P.every;
-    if (wantRedo) return strengthenItem((P.weakOnly ? pool[0] : (weakDue[0] || due[0])).id);
+    if (wantRedo) return strengthenItem((P.weakOnly || fsk ? pool[0] : (weakDue[0] || due[0])).id);
     return QUEUE[ni];
   }
   if (due.length) return Object.assign(strengthenItem(due[0].id), { mastery: true });
@@ -689,6 +726,7 @@ function finishSession() {
   }
   const before = S.pos;
   if (syncPos() > before && !it.redo && !it.mastery) sess.advanced = true;
+  if (sess.advanced && focusOn() && S.focus && itemSkills(it).includes(S.focus.sk)) S.focus.n = (S.focus.n || 0) + 1;
   S.log[d] = (S.log[d] || 0) + 1;
   S.history.push({ d, type: it.type, id: it.id, xp: sess.gained, score: sess.score, kind: sess.kind, adv: !!sess.advanced, at: Date.now(), v: it.v || null, u: Math.random().toString(36).slice(2, 10) });
   if (S.history.length > 5000) S.history = S.history.slice(-5000);
@@ -731,6 +769,17 @@ function rings(size = 150, opacity = true) {
 }
 function isStandalone() { return window.matchMedia("(display-mode: standalone)").matches || navigator.standalone; }
 
+function focusPanel() {
+  const sk = focusSkill(); if (!sk) return "";
+  const f = S.focus, day = dayGap(f.start, today()) + 1, tot = IX.lib.filter(t => t.sk === sk).length, got = skLearned(sk);
+  const left = Math.max(0, FOCUS_MIN - (f.n || 0));
+  const status = day <= FOCUS_DAYS ? `Day ${day} of ${FOCUS_DAYS} · ${f.n || 0} new this week` : left ? `${left} more new play${left > 1 ? "s" : ""} to finish this week` : "Moves on after your next play";
+  return `<section class="panel focuspanel" style="--k:var(--${sk})">
+    <div class="row2"><div><div class="eyebrow">This week's focus</div><h3>${SK[sk].name}</h3></div>
+      <select id="focusSel" aria-label="Change this week's focus">${ORDER.filter(k => k === sk || skLeft(k)).map(k => `<option value="${k}" ${k === sk ? "selected" : ""}>${SK[k].name}</option>`).join("")}</select></div>
+    <div class="bar"><span style="width:${Math.round(got / tot * 100)}%"></span></div>
+    <p class="small muted">${status}. ${got} of ${tot} ${SK[sk].name} techniques learned. New topics come from this skill; revisits of weak spots still mix in.</p></section>`;
+}
 function todayView() {
   const d = new Date();
   const dateStr = d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
@@ -764,6 +813,7 @@ function todayView() {
     <div class="streak">${flame}<b class="mono">${streak()}</b></div>
   </header>
   <section class="hero"><div class="ring">${rings(150, false)}</div>${heroBody}</section>
+  ${focusPanel()}
   <section class="panel treepanel"><canvas id="tree" aria-label="Your growth tree: one branch per skill, a leaf per technique learned, a blossom per technique mastered"></canvas>
     <div class="row2"><span class="small muted">${Tree.caption()}</span><button class="link small" id="treeReplay" style="white-space:nowrap">↻ Replay</button></div></section>
   ${install}
@@ -832,6 +882,42 @@ function momentMap() {
     <svg viewBox="0 0 ${W} ${H}" class="mm" role="img" aria-label="Map of the moves you've earned">${lines}${nodes}${labels}</svg>
     <div id="mmdetail">${detail}</div></section>`;
 }
+/* ---- When to use it: shown inside every exercise, so each technique is tied to a situation ---- */
+function whenRefs(id) {
+  const w = IX.when && IX.when[id]; if (!w) return null;
+  const alt = (w.n.match(/\{(\w+)\}/g) || []).map(x => x.slice(1, -1)).filter(T);
+  return { w, alt, pairs: w.p.filter(x => T(x) && !alt.includes(x)), sits: MOMENT_ALL().filter(m => m.ids.includes(id)) };
+}
+const techChip = (id, tap) => { const t = T(id), tag = tap ? "button" : "span";
+  return `<${tag} class="chip wchip" style="--k:var(--${t.sk})" ${tap ? `data-open="${id}"` : ""}>${esc(t.t)}<small>${memStatus(id).label}</small></${tag}>`; };
+function whenCard(id, tap) {
+  const r = whenRefs(id); if (!r) return "";
+  const n = esc(r.w.n).replace(/\{(\w+)\}/g, (_, x) => T(x) ? `<b>${esc(T(x).t)}</b>` : "");
+  return `<div class="whencard"><span class="eyebrow">Use it when</span><p class="wu">${esc(r.w.u)}</p><p class="small wn">${n}</p>
+    ${r.sits.length ? `<p class="small muted">On your cheat sheet: ${r.sits.map(m => esc(m.when)).join(" · ")}</p>` : ""}
+    <div class="wpairs"><span class="small muted">Pairs with</span><div class="chips">${r.pairs.map(p => techChip(p, tap)).join("")}</div></div></div>`;
+}
+// Where it fits: this technique in the middle, what it chains with, what to use instead, and the situations it covers.
+function fitMap(id) {
+  const r = whenRefs(id); if (!r) return "";
+  const t = T(id);
+  const nodes = r.sits.slice(0, 2).map(m => ({ kind: "sit", m })).concat(r.pairs.slice(0, 3).map(x => ({ kind: "pair", id: x })), r.alt.slice(0, 2).map(x => ({ kind: "alt", id: x })));
+  const W = 360, ROW = 34, H = nodes.length * ROW + 10, cx = 26, cy = H / 2, nx = 118;
+  const cut = s => s.length > 36 ? s.slice(0, 35) + "…" : s;
+  const tag = { sit: "When", pair: "Then", alt: "Instead" };
+  let lines = "", dots = "";
+  nodes.forEach((nd, i) => {
+    const y = 5 + ROW / 2 + i * ROW, tt = nd.id && T(nd.id), known = tt ? !!(S.learned[nd.id] || S.mem[nd.id]) : true;
+    const col = tt ? `var(--${tt.sk})` : "var(--muted)", label = tt ? tt.t : nd.m.when;
+    lines += `<path d="M${cx} ${cy} C ${cx + 50} ${cy}, ${nx - 50} ${y}, ${nx} ${y}" class="fm-l ${nd.kind}" style="stroke:${col}" fill="none"/>`;
+    dots += `<circle cx="${nx}" cy="${y}" r="${nd.kind === "sit" ? 4.5 : 6}" class="fm-n ${known ? "" : "dim"}" style="fill:${col}"/>
+      <text x="${nx + 12}" y="${y + 4}" class="mm-label ${known ? "" : "dim"}"><tspan class="fm-tag">${tag[nd.kind]}</tspan> ${esc(cut(label))}</text>`;
+  });
+  dots += `<circle cx="${cx}" cy="${cy}" r="11" style="fill:var(--${t.sk})"/>`;
+  return `<div class="panel fitmap"><span class="eyebrow">Where ${esc(t.t)} fits</span>
+    <svg viewBox="0 0 ${W} ${H}" class="fm" role="img" aria-label="How ${esc(t.t)} connects to situations and other techniques">${lines}${dots}</svg>
+    <p class="small muted">When: situations it's for. Then: what it chains into. Instead: what to reach for when it's the wrong tool. Faded = not learned yet.</p></div>`;
+}
 function momentsView() {
   const q = momentQ.trim().toLowerCase();
   const hit = m => !q || (m.when + " " + m.move + " " + (m.k || "") + " " + m.ids.map(id => (T(id) || {}).t || "").join(" ")).toLowerCase().includes(q);
@@ -879,12 +965,14 @@ function libDetail(id) {
     <h1>${esc(t.t)}</h1><p class="src">${esc(t.src)}</p>
     <p class="idea">${esc(t.idea)}</p>
     <ul class="list">${t.steps.map(s => `<li>${esc(s)}</li>`).join("")}</ul>
+    ${whenCard(id, true)}${fitMap(id)}
     <div class="btnrow"><button class="btn k" data-practice="learn">Practise: written</button><button class="btn ghost" data-practice="speak">Practise: speaking</button></div>
     <button class="btn soft wide" data-vary>Practise in a new situation (${(IX.vars[id] || []).length + 1} available)</button>
     <a class="btn ghost wide" id="surpriseLive" href="#" target="_blank" rel="noopener" style="text-align:center;text-decoration:none;display:flex;align-items:center;justify-content:center">💬 Surprise me: live roleplay, brand-new situation</a>
     <p class="small muted">${(GRADE_APPS[S.settings.gradeApp] || GRADE_APPS.claude).name} invents a situation you've never seen, plays the other person, then grades you. Unlimited.</p>
   </div>`;
   $("[data-back]").onclick = () => { view = "library"; render(); };
+  $$(".whencard [data-open]").forEach(b => b.onclick = () => { libDetail(b.dataset.open); scrollTo(0, 0); });
   $$("[data-practice]").forEach(b => b.onclick = () => startSession("practice", { type: b.dataset.practice, id }));
   $("[data-vary]").onclick = () => startSession("practice", { type: "speak", id, redo: true, v: nextVariant(id), direct: true });
   $("#surpriseLive").onclick = e => {
@@ -1015,6 +1103,7 @@ function settingsView() {
     <h3>Pace</h3>
     <div class="field"><label for="pace">How fast new topics arrive</label><select id="pace">${Object.entries(PACE).map(([k, p]) => `<option value="${k}" ${k === (st.pace || "explore") ? "selected" : ""}>${p.name}</option>`).join("")}</select></div>
     <p class="small muted" id="paceNote">${(PACE[st.pace] || PACE.explore).note}</p>
+    <div class="field"><label for="pathMode">New topics</label><select id="pathMode"><option value="focus" ${focusOn() ? "selected" : ""}>Focus weeks: one skill per week</option><option value="mixed" ${focusOn() ? "" : "selected"}>Mixed: rotate skills every play</option></select></div>
   </section>
   <section class="panel">
     <h3>Daily nudge</h3>
@@ -1077,6 +1166,7 @@ function learnStep() {
     ${listenBtn("learn")}
     <p class="idea">${esc(t.idea)}</p>
     <ul class="list">${t.steps.map(s => `<li>${esc(s)}</li>`).join("")}</ul>
+    ${whenCard(t.id)}
     <button class="btn wide" data-next>Quick check →</button>`;
 }
 function quizStep() {
@@ -1140,6 +1230,7 @@ function recapStep() {
   sayClips.recap = t.id + "_learn"; sayTexts.recap = t.t + ". " + t.idea;
   return `<div class="eyebrow">Speaking drill · recap</div><h1>${esc(t.t)}</h1><p class="src">${esc(t.src)}</p>${listenBtn("recap")}
     <p class="idea">${esc(t.idea)}</p><ul class="list">${t.steps.map(s => `<li>${esc(s)}</li>`).join("")}</ul>
+    ${whenCard(t.id)}
     <button class="btn wide" data-next>Show me the scenario →</button>`;
 }
 function sceneData() { return sess.item.type === "challenge" ? CH(sess.item.id) : variantScene(sess.item); }
@@ -1229,6 +1320,7 @@ function doneStep() {
           : r.last === 3 ? `Getting there. Back in ${r.int} days with a new scenario.`
           : r.last === 4 ? `Close. A 5/5 is what counts toward Mastered. Back in ${r.int} days.`
           : `5/5! That's ${r.fives} of ${FIVES_TO_MASTER} toward Mastered. ${r.fives < FIVES_TO_MASTER ? "Do it again on a different scenario." : ""}`}</p></div>`; })() : ""}
+    ${sess.item.type !== "challenge" ? fitMap(sess.item.id) : ""}
     <div class="confetti">${ORDER.map(k => `<i style="background:var(--${k})"></i>`).join("")}</div>
     <button class="btn wide" data-exit>Done</button>`;
 }
@@ -1242,6 +1334,7 @@ function bind() {
     const tr = $("#treeReplay"); if (tr) tr.onclick = () => Tree.mount($("#tree"), true);
     const st = $("[data-start]"); if (st) st.onclick = () => startSession(S.cur && !S.cur.finished && S.cur.date === today() ? S.cur.kind : "daily");
     const bo = $("[data-bonus]"); if (bo) bo.onclick = () => startSession("bonus");
+    const fsel = $("#focusSel"); if (fsel) fsel.onchange = () => { setFocus(fsel.value); render(); toast("This week: " + SK[fsel.value].name); };
     $$("[data-newtopic]").forEach(b => b.onclick = () => { const i = pathPick(); if (i >= 0) startSession(b.dataset.newtopic, QUEUE[i]); });
     $$("[data-lib]").forEach(b => b.onclick = () => { libSkill = b.dataset.lib; view = "library"; render(); scrollTo(0, 0); });
     $$("[data-mission]").forEach(b => b.onclick = () => completeMission(b.dataset.mission, b));
@@ -1318,6 +1411,7 @@ function bindSettings() {
     catch (e) { no.disabled = false; no.textContent = "Turn on daily nudge"; $("#notifMsg").innerHTML = `<span style="color:var(--bad)">${esc(e.message || "Couldn't turn on notifications.")}</span>`; }
   };
   const nf = $("#notifOff"); if (nf) nf.onclick = async () => { await disableNotifications(); toast("Daily nudge off"); render(); };
+  const pm = $("#pathMode"); if (pm) pm.onchange = e => { S.settings.path = e.target.value; save(); syncSoon(); toast(focusOn() ? "Focus weeks on" : "Mixed order on"); };
   const pc = $("#pace"); if (pc) pc.onchange = e => { S.settings.pace = e.target.value; save(); syncSoon(); $("#paceNote").textContent = PACE[S.settings.pace].note; toast("Pace set to " + PACE[S.settings.pace].name); };
   const nh = $("#notifHour"); if (nh) nh.onchange = async e => { S.settings.notifHour = +e.target.value; save(); try { await writePushFile(); toast("Nudge moved to " + fmtHour(S.settings.notifHour)); } catch (err) { toast(err.message); } };
   const np = $("#notifPreview"); if (np) np.onclick = async () => {
