@@ -34,6 +34,7 @@ jobs:
         run: node scripts/nudge.mjs
         env:
           GIST_ID: ${{ secrets.GIST_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORCE: ${{ github.event.inputs.force || 'false' }}
       - if: github.event_name == 'schedule' && steps.send.outputs.sent == 'true'
         run: mkdir -p .nudge-sent && date > .nudge-sent/stamp

@@ -9,8 +9,29 @@ const GIST_ID = process.env.GIST_ID;
 const FORCE = process.env.FORCE === "true";
 if (!GIST_ID) { note("error", "The GIST_ID secret isn't set. Add it under repo Settings → Secrets and variables → Actions."); process.exit(1); }
 
-const gres = await fetch(`https://api.github.com/gists/${GIST_ID.trim()}`, { headers: { "Accept": "application/vnd.github+json", "User-Agent": "intersection-nudge" } });
-if (!gres.ok) { note("error", `Couldn't read the backup gist (HTTP ${gres.status}). Check the GIST_ID secret matches the ID shown in the app.`); process.exit(1); }
+// Read the gist. Anonymous API calls share a small rate limit across GitHub's runners, which caused
+// occasional HTTP 403s. So: use the run's own token first (much higher limit), fall back to anonymous,
+// and retry with a pause. If it's still rate-limited, skip quietly: the next run is 30 minutes away.
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function readGist() {
+  const url = `https://api.github.com/gists/${GIST_ID.trim()}`, base = { "Accept": "application/vnd.github+json", "User-Agent": "intersection-nudge" };
+  const tok = process.env.GITHUB_TOKEN;
+  let res;
+  for (let i = 0; i < 4; i++) {
+    const useTok = tok && i % 2 === 0;
+    res = await fetch(url, { headers: useTok ? { ...base, Authorization: `Bearer ${tok}` } : base }).catch(() => null);
+    if (res && res.ok) return res;
+    if (res && res.status === 404 && !useTok) return res;
+    await sleep(3000 * (i + 1));
+  }
+  return res;
+}
+const gres = await readGist();
+if (!gres || !gres.ok) {
+  const st = gres ? gres.status : "network error";
+  if (!gres || st === 403 || st === 429 || st >= 500) { note("warning", `GitHub's API was busy (HTTP ${st}). Skipping this run; the next one tries again in 30 minutes.`); process.exit(0); }
+  note("error", `Couldn't read the backup gist (HTTP ${st}). Check the GIST_ID secret matches the ID shown in the app.`); process.exit(1);
+}
 const gist = await gres.json();
 async function file(name) {
   const f = gist.files && gist.files[name]; if (!f) return null;
