@@ -337,3 +337,15 @@ button.wchip{cursor:pointer}
 .focuspanel .bar span{background:var(--k)}
 .focuspanel select{max-width:48%;font:inherit;font-size:.85rem;padding:6px 8px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--ink)}
 .fm-tag{font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;fill:var(--muted)}
+
+/* Checkpoints (v32) */
+.tests .trow{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line)}
+.tests .trow:first-of-type{border-top:0}
+.tests .tsk{min-width:96px;font-weight:700;font-size:.86rem;color:var(--k)}
+.tests .tcells{display:flex;flex-wrap:wrap;gap:6px}
+.tcell{font:inherit;font-size:.74rem;font-weight:700;padding:4px 10px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--muted);white-space:nowrap}
+.tcell.passed{background:color-mix(in srgb,var(--k) 16%,transparent);border-color:transparent;color:var(--k)}
+.tcell.ready{background:var(--k);border-color:var(--k);color:#fff;cursor:pointer}
+.tcell.wait{border-style:dashed}
+.tverdict{display:flex;flex-direction:column;gap:3px;padding:10px 12px;border-radius:12px;margin:8px 0;border-left:3px solid var(--good);background:color-mix(in srgb,var(--good) 10%,var(--surface))}
+.tverdict.fail{border-left-color:var(--e);background:color-mix(in srgb,var(--e) 10%,var(--surface))}

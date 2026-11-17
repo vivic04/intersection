@@ -11,7 +11,7 @@ const SK = {
 };
 const KEY = "intersection.state.v1";
 const MODEL = "claude-haiku-5-5";
-const APP_VERSION = "31";
+const APP_VERSION = "32";
 const TIER = { 1: "Foundations", 2: "Practitioner", 3: "Advanced" };
 
 /* ============ Curriculum queue ============ */
@@ -41,6 +41,8 @@ const QUEUE = buildQueue();
 // Path position is derived from what you've actually done, so it survives queue changes and device merges.
 const qDone = q => q.type === "learn" ? !!S.learned[q.id] : !!S.chDone[q.id];
 function pathNext() { return QUEUE.findIndex(q => !qDone(q)); }
+// Available = not done and not behind a checkpoint you haven't passed yet (see Checkpoints below).
+const qAvail = q => !qDone(q) && !(q.type === "learn" && heldBack(q.id));
 // A skill added after you started (View, in v26) would otherwise fill every new slot until it caught up.
 // Instead it takes every other new topic: the next new item alternates between it and the rest of the path.
 const LATE = "v";
@@ -49,7 +51,7 @@ const isLate = q => q.type === "learn" && T(q.id) && T(q.id).sk === LATE;
 // The week moves on after 7 days once you've done at least 3 new plays in it (so a missed week isn't skipped),
 // or straight away when that skill has nothing new left. Revisits of weak spots still mix in from any skill.
 const FOCUS_DAYS = 7, FOCUS_MIN = 3;
-const skLeft = sk => QUEUE.some(q => q.type === "learn" && !qDone(q) && T(q.id).sk === sk);
+const skLeft = sk => QUEUE.some(q => q.type === "learn" && qAvail(q) && T(q.id).sk === sk) || !!readyTest(sk);
 const skLearned = sk => IX.lib.filter(t => t.sk === sk && S.learned[t.id]).length;
 const dayGap = (a, b) => Math.round((new Date(b + "T12:00:00") - new Date(a + "T12:00:00")) / 864e5);
 function focusOn() { return (S.settings.path || "focus") === "focus"; }
@@ -72,15 +74,15 @@ function focusPick(sk) {
   // Every 4th new play in the week is a challenge that uses this skill, once you have a couple of its techniques
   // and at least one technique from each other skill it mixes in.
   if (n % 4 === 3 && skLearned(sk) >= 2) {
-    const ci = QUEUE.findIndex(q => q.type === "challenge" && !qDone(q) && CH(q.id).sk.includes(sk) && CH(q.id).sk.every(k => k === sk || skLearned(k) > 0));
+    const ci = QUEUE.findIndex(q => q.type === "challenge" && qAvail(q) && CH(q.id).sk.includes(sk) && CH(q.id).sk.every(k => k === sk || skLearned(k) > 0));
     if (ci >= 0) return ci;
   }
-  return QUEUE.findIndex(q => q.type === "learn" && !qDone(q) && T(q.id).sk === sk);
+  return QUEUE.findIndex(q => q.type === "learn" && qAvail(q) && T(q.id).sk === sk);
 }
 function pathPick() {
-  const ni = pathNext(); if (ni < 0) return -1;
-  const fs = focusSkill(); if (fs) { const fi = focusPick(fs); if (fi >= 0) return fi; }
-  const li = QUEUE.findIndex(q => !qDone(q) && isLate(q)), oi = QUEUE.findIndex(q => !qDone(q) && !isLate(q));
+  const ni = QUEUE.findIndex(qAvail); if (ni < 0) return -1;
+  const fs = focusSkill(); if (fs) { const fi = focusPick(fs); if (fi >= 0) return fi; if (readyTest(fs)) return -1; }
+  const li = QUEUE.findIndex(q => qAvail(q) && isLate(q)), oi = QUEUE.findIndex(q => qAvail(q) && !isLate(q));
   if (li < 0 || oi < 0) return ni;
   const lastNew = [...(S.history || [])].reverse().find(h => h.type === "learn" || h.type === "challenge");
   const lastWasLate = !!lastNew && lastNew.type === "learn" && T(lastNew.id) && T(lastNew.id).sk === LATE;
@@ -89,6 +91,43 @@ function pathPick() {
 function syncPos() { S.pos = QUEUE.filter(qDone).length; return S.pos; }
 const T = id => IX.lib.find(l => l.id === id);
 const CH = id => IX.ch.find(c => c.id === id);
+
+/* ============ Checkpoints (v32) ============ */
+// One per skill per tier. When you've learned every technique in a tier, a checkpoint unlocks: a conversation
+// with an AI examiner in situations you've never seen, where it never names the technique. Passing it unlocks
+// that skill's next tier on your path. Results live in the play history, so they sync like everything else.
+const TEST_PASS = 4;
+const isTest = id => /^t-[a-z]\d$/.test(id || "");
+const testId = (sk, tier) => "t-" + sk + tier;
+const TEST = id => { if (!isTest(id)) return null; const sk = id[2], tier = +id[3];
+  const techs = IX.lib.filter(t => t.sk === sk && t.tier === tier); if (!techs.length || !SK[sk]) return null;
+  const last = !IX.lib.some(t => t.sk === sk && t.tier > tier);
+  return { id, sk, tier, techs, last, t: `${SK[sk].name} · ${TIER[tier]} checkpoint` }; };
+function testState(id) {
+  const tries = (S.history || []).filter(h => h.type === "test" && h.id === id);
+  const pass = tries.filter(h => h.pass).sort((a, b) => (a.at || 0) - (b.at || 0))[0];
+  const last = tries.sort((a, b) => (b.at || 0) - (a.at || 0))[0];
+  return { tries: tries.length, passed: pass ? pass.d : null, best: tries.reduce((m, h) => Math.max(m, h.avg || h.score || 0), 0), last: last ? last.d : null };
+}
+const testsFor = sk => [1, 2, 3].map(tr => TEST(testId(sk, tr))).filter(Boolean);
+const tierLearned = (sk, tier) => IX.lib.filter(t => t.sk === sk && t.tier === tier && S.learned[t.id]).length;
+// Status: locked (still learning the tier), ready, cooldown (not passed today; retake tomorrow), passed
+function testStatus(id) {
+  const x = TEST(id), st = testState(id);
+  if (st.passed) return "passed";
+  if (tierLearned(x.sk, x.tier) < x.techs.length) return "locked";
+  if (st.last === today()) return "cooldown";
+  return "ready";
+}
+function readyTest(sk) { const x = testsFor(sk).find(x => testStatus(x.id) === "ready"); return x ? x.id : null; }
+// A technique is held back on the path until the checkpoint for the tier before it is passed.
+function heldBack(id) { const t = T(id); if (!t || t.tier <= 1 || !S.learned) return false; return !testState(testId(t.sk, t.tier - 1)).passed; }
+function pickTest() {
+  const fs = focusOn() && focusSkill();
+  if (fs) { const r = readyTest(fs); return r ? { type: "test", id: r } : null; }
+  for (const k of ORDER) { const r = readyTest(k); if (r) return { type: "test", id: r }; }
+  return null;
+}
 
 /* ============ State ============ */
 const blank = () => ({
@@ -126,7 +165,7 @@ let DEVICE = ""; try { DEVICE = localStorage.getItem(DEV_KEY) || ""; if (!DEVICE
 // (a union with no duplicates), so XP can never be double-counted or lost by a sync.
 function deriveXP() {
   const t = { q: 0, c: 0, e: 0, n: 0, s: 0, v: 0 };
-  const sks = id => { const x = T(id); if (x) return [x.sk]; const c = CH(id); return c ? c.sk : []; };
+  const sks = id => { if (isTest(id)) return [id[2]]; const x = T(id); if (x) return [x.sk]; const c = CH(id); return c ? c.sk : []; };
   for (const h of S.history || []) { const ks = sks(h.id); if (!ks.length || !h.xp) continue; const each = Math.round(h.xp / ks.length); ks.forEach(k => t[k] = Math.max(0, t[k] + each)); }
   for (const m of S.missions || []) if (m.done && m.awarded) { const x = T(m.id); if (x) t[x.sk] += 15; }
   if (S.cur && !S.cur.finished && S.cur.gained) { const ks = sks(S.cur.item.id); ks.forEach(k => t[k] += Math.round(S.cur.gained / ks.length)); }
@@ -255,9 +294,9 @@ function addXP(sks, n) { const list = Array.isArray(sks) ? sks : [sks]; const ea
   setTimeout(() => list.forEach(k => { const L = lvl(S.xp[k] || 0); if (L > before[k]) toast(`🎉 ${SK[k].name} reached Level ${L} · ${rank(L)}`); }), 0); const mine = (S.xpDev = S.xpDev || {})[DEVICE] || (S.xpDev[DEVICE] = { q: 0, c: 0, e: 0, n: 0, s: 0, v: 0 }); list.forEach(k => mine[k] = Math.max(0, (mine[k] || 0) + each)); sumXP(); return n; }
 function seeded(seed) { let x = Math.abs(seed) % 2147483647 || 7; return () => (x = x * 16807 % 2147483647) / 2147483647; }
 function hash(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) | 0; return h; }
-function itemSkills(item) { return item.type === "challenge" ? CH(item.id).sk : [T(item.id).sk]; }
-function itemTitle(item) { return item.type === "challenge" ? CH(item.id).t : T(item.id).t; }
-const typeLabel = { learn: "Learn + drill", speak: "Speaking drill", challenge: "Intersection challenge", mastery: "Mastery round", redo: "Strengthen" };
+function itemSkills(item) { return isTest(item.id) ? [item.id[2]] : item.type === "challenge" ? CH(item.id).sk : [T(item.id).sk]; }
+function itemTitle(item) { return isTest(item.id) ? TEST(item.id).t : item.type === "challenge" ? CH(item.id).t : T(item.id).t; }
+const typeLabel = { test: "Checkpoint · prove it in new situations", learn: "Learn + drill", speak: "Speaking drill", challenge: "Intersection challenge", mastery: "Mastery round", redo: "Strengthen" };
 function itemLabel(item) {
   if (item.featured) return "New technique, added for you";
   if (item.redo) { const r = S.mem[item.id]; return "Strengthen" + (item.v ? " · " + VARY_LABEL[item.v] : "") + (r && r.last ? " · last " + r.last + "/5" : ""); }
@@ -676,8 +715,9 @@ function nextItem() {
     if (fsk) pool = pool.filter(d => inFocus(d.id)).concat(pool.filter(d => !inFocus(d.id))); // this week's skill first
     const wantRedo = pool.length && S.lastMain !== "redo" && run >= P.every;
     if (wantRedo) return strengthenItem((P.weakOnly || fsk ? pool[0] : (weakDue[0] || due[0])).id);
-    return QUEUE[ni];
+    return pickTest() || QUEUE[ni];
   }
+  { const tst = pickTest(); if (tst) return tst; }
   if (due.length) return Object.assign(strengthenItem(due[0].id), { mastery: true });
   // Mastery mode: cycle back through spoken drills and challenges, least recently practiced first
   const pool = IX.lib.map(t => ({ type: "speak", id: t.id, last: S.spoken[t.id] || "" })).concat(IX.ch.map(c => ({ type: "challenge", id: c.id, last: S.chDone[c.id] || "" })));
@@ -685,6 +725,7 @@ function nextItem() {
   return { type: pool[0].type, id: pool[0].id, mastery: true };
 }
 function stepsFor(item) {
+  if (item.type === "test") return ["test"];
   if (item.type === "learn") return ["learn", "quiz", "drill", "grade", "mission"];
   if (item.type === "speak") return ["recap", "scene", "record", "grade"];
   return ["scene", "record", "grade"];
@@ -708,9 +749,12 @@ function advance() {
 function finishSession() {
   const it = sess.item, d = today();
   if (it.type === "learn") {
+    const tt = T(it.id), tk = testId(tt.sk, tt.tier), wasLocked = testStatus(tk) === "locked";
+    if (!S.learned[it.id]) setTimeout(() => { if (wasLocked && testStatus(tk) !== "locked") toast(`🎯 Checkpoint unlocked: ${TEST(tk).t}`); }, 3200);
     if (!S.learned[it.id]) S.reviews[it.id] = { due: addDays(d, 2), int: 2, n: 0 };
     S.learned[it.id] = d;
   } else if (it.type === "speak") S.spoken[it.id] = d;
+  else if (it.type === "test") return finishTest();
   else S.chDone[it.id] = d;
   const had = earnedSet();
   if (sess.score > 0) applyGrade(it.id, sess.score); // a skipped drill (score 0) isn't a grade
@@ -803,7 +847,7 @@ function todayView() {
     heroBody = `<div class="eyebrow">${resume ? "Resume today's play" : "Today's play"} · ${item.redo ? "Revisit" : "Play " + (item.mastery ? "∞" : dayN) + " of " + QUEUE.length}</div>
       <h2>${esc(itemTitle(item))}</h2>
       <div class="chips">${sks.map(k => `<span class="chip" style="--k:var(--${k});background:color-mix(in srgb,var(--${k}) 30%,transparent);color:var(--bg)">${SK[k].name}</span>`).join("")}</div>
-      <div class="meta"><span>${itemLabel(item)}</span><span>~5 min</span>${dueN ? `<span>+ ${Math.min(2, dueN)} quick review${dueN > 1 ? "s" : ""}</span>` : ""}</div>
+      <div class="meta"><span>${itemLabel(item)}</span><span>${item.type === "test" ? "~15 min" : "~5 min"}</span>${dueN ? `<span>+ ${Math.min(2, dueN)} quick review${dueN > 1 ? "s" : ""}</span>` : ""}</div>
       <button class="btn" data-start>${resume ? "Continue play" : "Start play"}</button>
       ${!resume && item.redo && pathNext() >= 0 ? `<p class="small" style="opacity:.8;margin-top:10px">Rather explore? <button class="link" data-newtopic="daily" style="color:inherit;text-decoration:underline">Learn a new topic instead</button></p>` : ""}`;
   }
@@ -1010,6 +1054,7 @@ function progressView() {
   <section class="panel map">${rings(150, true)}
     <div style="display:flex;flex-direction:column;gap:6px;min-width:0"><span class="eyebrow">Intersection level</span><span class="big mono">L${minL}</span>
     <p class="small muted">Your level is your weakest skill's level. The circles fill in as each one grows.</p></div></section>
+  ${testsPanel()}
   <div class="stats">
     <div class="stat"><b class="mono">${streak()}</b><span>Day streak</span></div>
     <div class="stat"><b class="mono">${bestStreak()}</b><span>Best streak</span></div>
@@ -1049,8 +1094,8 @@ function progressView() {
     const recent = S.history.slice().sort((a, b) => (b.at || 0) - (a.at || 0) || (b.d > a.d ? 1 : -1)).slice(0, recentAll ? 60 : 8);
     if (!recent.length) return "";
     return `<section class="panel recentpanel"><div class="row2"><h3>Recent plays</h3><span class="small muted">Tap Remove to undo a mistake</span></div><div>${recent.map(h => {
-      const k = playKey(h), sk = T(h.id) ? [T(h.id).sk] : CH(h.id) ? CH(h.id).sk : ["q"];
-      return `<div class="logrow" style="--k:var(--${sk[0]})"><span class="box">${h.score != null && h.score > 0 ? h.score : "✓"}</span><span><span>${esc(itemTitle({ type: T(h.id) ? "learn" : "challenge", id: h.id }))}</span><small>${new Date(h.d + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" })} · ${h.score != null && h.score > 0 ? h.score + "/5" : "no score"} · +${h.xp || 0} xp</small></span>
+      const k = playKey(h), sk = isTest(h.id) ? [h.id[2]] : T(h.id) ? [T(h.id).sk] : CH(h.id) ? CH(h.id).sk : ["q"];
+      return `<div class="logrow" style="--k:var(--${sk[0]})"><span class="box">${h.score != null && h.score > 0 ? h.score : "✓"}</span><span><span>${esc(isTest(h.id) ? (TEST(h.id) ? TEST(h.id).t : "Checkpoint") + (h.pass ? " · passed" : " · not yet") : itemTitle({ type: T(h.id) ? "learn" : "challenge", id: h.id }))}</span><small>${new Date(h.d + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" })} · ${h.score != null && h.score > 0 ? h.score + "/5" : "no score"} · +${h.xp || 0} xp</small></span>
         ${confirmKey === k ? `<span class="btnrow" style="flex-wrap:nowrap;gap:6px"><button class="link small" style="color:var(--bad)" data-rmyes="${esc(k)}">Remove</button><button class="link small" data-rmno>Keep</button></span>` : `<button class="link small" data-rm="${esc(k)}">Remove</button>`}</div>`; }).join("")}</div>
       ${S.history.length > 8 ? `<button class="link small" data-recentall>${recentAll ? "Show fewer" : "Show more"}</button>` : ""}</section>`;
   })()}
@@ -1145,7 +1190,7 @@ function sessionView() {
   let body = "";
   if (sess.finished) body = doneStep();
   else if (step === "review") body = reviewStep();
-  else body = ({ learn: learnStep, quiz: quizStep, drill: drillStep, grade: gradeStep, mission: missionStep, recap: recapStep, scene: sceneStep, record: recordStep })[step]();
+  else body = ({ test: testStep, learn: learnStep, quiz: quizStep, drill: drillStep, grade: gradeStep, mission: missionStep, recap: recapStep, scene: sceneStep, record: recordStep })[step]();
   return `<div style="--k:var(--${k});display:flex;flex-direction:column;gap:16px">${head}<section class="card">${body}</section></div>`;
 }
 function reviewStep() {
@@ -1232,6 +1277,96 @@ function recapStep() {
     <p class="idea">${esc(t.idea)}</p><ul class="list">${t.steps.map(s => `<li>${esc(s)}</li>`).join("")}</ul>
     ${whenCard(t.id)}
     <button class="btn wide" data-next>Show me the scenario →</button>`;
+}
+/* ---- Checkpoint session ---- */
+function testPrompt(x) {
+  const avoid = x.techs.map(t => t.scene.slice(0, 90)).join(" | ");
+  const tools = x.techs.map(t => `- ${t.t}: ${t.idea.split(/(?<=[.!?])\s/)[0]} Use it when: ${(IX.when && IX.when[t.id] || {}).u || ""}`).join("\n");
+  return `You're my examiner for a skills checkpoint. I've been training "${SK[x.sk].name}" (${SK[x.sk].tag}) and just finished the ${TIER[x.tier]} level. I need to prove I can apply these techniques in situations I've never seen, and reason about which one fits, not just recite them.
+
+The techniques I'm being tested on. Keep this list to yourself and never name or hint at them during the test:
+${tools}
+
+About me: a young professional in Toronto working in AI strategy at a bank, working toward AI product management.
+
+How to run it:
+- 3 rounds. Each is a brand-new, realistic situation in a different setting (for example a job interview, family or friends, a landlord or vendor, a side project, a meeting with senior leaders, networking, someone I mentor). Make them clearly different from these, which I've already practised: ${avoid}
+- Start each round with the situation in 2 to 3 sentences, then ask only: "What's going on here, and what would you do?"
+- After my answer, play the other person for 2 to 4 short turns so I have to actually do it. Stay in character, reply in 1 to 3 sentences, and push back like a real person would.
+- Then ask one question that probes my reasoning, such as "Why that approach and not another?" or "What would make you change course?"
+- Make one round a trap, where the technique that looks obvious is the wrong tool. Don't say which round.
+- Don't teach, hint or grade until all 3 rounds are done. If I ask for a hint, say it comes at the end.
+- Begin round 1 now.
+
+Grade each round strictly, as if deciding whether I can use these skills like a capable professional: (1) Diagnosis: did I read the real situation? (2) Choice: did I pick a fitting approach and say why, including spotting when the obvious one is wrong? (3) Execution: did I actually do it well in the moment? (4) Transfer: did I adapt it to this situation rather than recite steps?
+
+At the end, reply in exactly this format:
+Round 1: N/5 - one line on why
+Round 2: N/5 - one line on why
+Round 3: N/5 - one line on why
+Strongest: one sentence.
+Biggest gap: one sentence quoting a moment from our conversation, and what a skilled person would have said instead.
+Revisit: the exact names of up to 3 techniques from the list that I should practise more, or "none"
+RESULT: PASS x.x/5 if my average is ${TEST_PASS}.0 or higher and no round is below 3, otherwise RESULT: NOT YET x.x/5`;
+}
+function parseVerdict(txt, x) {
+  const m = (txt || "").match(/RESULT:?\s*\**\s*(PASS|NOT\s*YET)\b[^0-9]*([0-5](?:\.\d+)?)\s*\/\s*5/i);
+  if (!m) return null;
+  const avg = +m[2], rounds = [...txt.matchAll(/Round\s*\d\s*:?\s*\**\s*([0-5])\s*\/\s*5/gi)].map(r => +r[1]);
+  const rv = ((txt.match(/Revisit:?\s*(.+)/i) || [])[1] || "").toLowerCase();
+  const revisit = x.techs.filter(t => rv.includes(t.t.toLowerCase())).map(t => t.id);
+  const pass = /pass/i.test(m[1]) && avg >= TEST_PASS && !rounds.some(r => r < 3);
+  return { pass, avg, rounds, revisit };
+}
+function testStep() {
+  const x = TEST(sess.item.id), GA = GRADE_APPS[S.settings.gradeApp] || GRADE_APPS.claude, st = testState(x.id);
+  const nextTier = IX.lib.some(t => t.sk === x.sk && t.tier === x.tier + 1) ? TIER[x.tier + 1] : null;
+  return `<div class="eyebrow">Checkpoint · ${TIER[x.tier]}${st.tries ? ` · attempt ${st.tries + 1}` : ""}</div>
+    <h1>${SK[x.sk].name}: prove it somewhere new</h1>
+    <p class="idea">You've learned all ${x.techs.length} ${TIER[x.tier]} techniques. Now show you can use them in situations you've never seen, without being told which one applies.</p>
+    <div class="panel"><span class="eyebrow">How it works</span><ol class="list small">
+      <li>${GA.name} becomes your examiner and invents 3 new situations, unlike anything in this app. It never names a technique.</li>
+      <li>For each one, say what's really going on, which approach fits and why, then do it in a short back-and-forth.</li>
+      <li>One round is a trap: the obvious technique is the wrong tool. Spot it.</li>
+      <li>To pass: average ${TEST_PASS}/5 or better, with no round below 3. ${nextTier ? `Passing unlocks ${nextTier} ${SK[x.sk].name} topics on your path.` : `It's the final ${SK[x.sk].name} checkpoint.`}</li></ol></div>
+    <div><span class="small muted">Covers</span><div class="chips" style="flex-wrap:wrap;margin-top:6px">${x.techs.map(t => techChip(t.id, false)).join("")}</div></div>
+    <a class="btn wide" id="testBtn" href="#" target="_blank" rel="noopener" style="text-align:center;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:8px">🎯 Start the test in ${GA.name}</a>
+    <p class="small muted">Type or use voice there. Take your time: it's about how you reason, not speed. ${GA.paste ? "The test is copied, so paste it in to begin." : "The test is also copied, in case it isn't filled in."}</p>
+    <div class="panel" id="testResult" ${sess.testOpened ? "" : "hidden"}><span class="eyebrow">Your result</span>
+      <p class="small muted">When it's done, copy the examiner's final verdict (from "Round 1" to "RESULT") and paste it here. The app reads your result and which techniques to revisit.</p>
+      <textarea id="testPaste" style="min-height:110px" placeholder="Round 1: 4/5 - …&#10;…&#10;RESULT: PASS 4.3/5">${esc(sess.testPaste || "")}</textarea>
+      <div id="testParsed">${testParsedHtml(sess.testParsed, x)}</div>
+      <p class="small muted" style="margin-top:10px">No verdict to paste? Enter it yourself:</p>
+      <div class="btnrow"><button class="btn ghost" data-testres="fail">Not yet</button><button class="btn k" data-testres="pass">I passed</button></div>
+    </div>`;
+}
+function testParsedHtml(pv, x) {
+  if (!pv) return sess.testPaste ? `<p class="small" style="color:var(--bad)">Couldn't find a "RESULT:" line yet. Paste the whole verdict.</p>` : "";
+  return `<div class="tverdict ${pv.pass ? "pass" : "fail"}"><b>${pv.pass ? "Passed" : "Not yet"} · ${pv.avg}/5</b>${pv.rounds.length ? `<span class="small">Rounds: ${pv.rounds.join(", ")}</span>` : ""}
+    ${pv.revisit.length ? `<span class="small">Revisit: ${pv.revisit.map(id => esc(T(id).t)).join(", ")}</span>` : ""}</div>
+    <button class="btn wide k" data-testsave>Save result</button>`;
+}
+function finishTest() {
+  const it = sess.item, d = today(), r = sess.testRes || { pass: false, avg: 0, revisit: [] }, x = TEST(it.id);
+  // Techniques the examiner flagged come back first as revisits.
+  for (const id of r.revisit || []) { const m = S.mem[id]; if (m) { m.due = d; m.last = Math.min(m.last || 3, 3); m.at = d; } }
+  if (sess.kind !== "practice") { S.lastMain = "new"; S.redoRun = 0; S.newRun = (S.newRun || 0) + 1; }
+  if (r.pass && focusOn() && S.focus && S.focus.sk === x.sk) S.focus.n = (S.focus.n || 0) + 1;
+  S.log[d] = (S.log[d] || 0) + 1;
+  S.history.push({ d, type: "test", id: it.id, xp: sess.gained, score: Math.max(1, Math.round(r.avg || (r.pass ? TEST_PASS : 3))), avg: r.avg || null, pass: !!r.pass, revisit: r.revisit || [], kind: sess.kind, at: Date.now(), u: Math.random().toString(36).slice(2, 10) });
+  sess.finished = true; sess.testDone = r;
+  syncSoon();
+}
+function testsPanel() {
+  const all = ORDER.flatMap(testsFor), passed = all.filter(x => testStatus(x.id) === "passed").length;
+  const rows = ORDER.map(k => `<div class="trow" style="--k:var(--${k})"><span class="tsk">${SK[k].name}</span><span class="tcells">${(() => { const ts = testsFor(k), nx = ts.findIndex(x => testStatus(x.id) !== "passed"); return nx < 0 ? ts : ts.slice(0, nx + 1); })().map(x => {
+    const st = testStatus(x.id), lab = TIER[x.tier];
+    if (st === "passed") return `<span class="tcell passed">✓ ${lab}</span>`;
+    if (st === "ready") return `<button class="tcell ready" data-taketest="${x.id}">Take ${lab} test</button>`;
+    if (st === "cooldown") return `<span class="tcell wait">${lab} · retake tomorrow</span>`;
+    return `<span class="tcell locked">${lab} · ${tierLearned(k, x.tier)}/${x.techs.length} learned</span>`; }).join("")}</span></div>`).join("");
+  return `<section class="panel tests"><div class="row2"><h3>Checkpoints</h3><span class="small muted mono">${passed}/${all.length} passed</span></div>${rows}
+    <p class="small muted">Learn every technique in a tier to unlock its checkpoint: a conversation in situations you've never seen. Passing it unlocks that skill's next tier on your path.</p></section>`;
 }
 function sceneData() { return sess.item.type === "challenge" ? CH(sess.item.id) : variantScene(sess.item); }
 function sceneStep() {
@@ -1320,7 +1455,9 @@ function doneStep() {
           : r.last === 3 ? `Getting there. Back in ${r.int} days with a new scenario.`
           : r.last === 4 ? `Close. A 5/5 is what counts toward Mastered. Back in ${r.int} days.`
           : `5/5! That's ${r.fives} of ${FIVES_TO_MASTER} toward Mastered. ${r.fives < FIVES_TO_MASTER ? "Do it again on a different scenario." : ""}`}</p></div>`; })() : ""}
-    ${sess.item.type !== "challenge" ? fitMap(sess.item.id) : ""}
+    ${sess.testDone ? (() => { const x = TEST(sess.item.id), r = sess.testDone, nt = IX.lib.some(t => t.sk === x.sk && t.tier === x.tier + 1) ? TIER[x.tier + 1] : null;
+      return `<div class="tverdict ${r.pass ? "pass" : "fail"}"><b>${r.pass ? "Checkpoint passed" : "Not yet"}${r.avg ? " · " + r.avg + "/5" : ""}</b><span class="small">${r.pass ? (nt ? `${nt} ${SK[x.sk].name} topics are now unlocked on your path.` : `That's the final ${SK[x.sk].name} checkpoint. Well earned.`) : `${r.revisit && r.revisit.length ? "The techniques the examiner flagged come back first as revisits. " : ""}You can retake it from tomorrow, with brand-new situations.`}</span></div>`; })() : ""}
+    ${T(sess.item.id) ? fitMap(sess.item.id) : ""}
     <div class="confetti">${ORDER.map(k => `<i style="background:var(--${k})"></i>`).join("")}</div>
     <button class="btn wide" data-exit>Done</button>`;
 }
@@ -1349,6 +1486,7 @@ function bind() {
     const la = $("[data-logall]"); if (la) la.onclick = () => { missionLogAll = !missionLogAll; render(); const el = $("#missionlog"); if (el) el.scrollIntoView(); };
   }
   if (view === "progress") {
+    $$("[data-taketest]").forEach(b => b.onclick = () => startSession("practice", { type: "test", id: b.dataset.taketest }));
     $$("[data-strength]").forEach(b => b.onclick = () => startSession("practice", strengthenItem(b.dataset.strength)));
     $$("[data-mm]").forEach(g => g.onclick = () => { mapPick = mapPick === g.dataset.mm ? null : g.dataset.mm; const y = scrollY; render(); scrollTo(0, y); });
     $$(".mmap [data-open]").forEach(b => b.onclick = () => { view = "library"; libDetail(b.dataset.open); });
@@ -1508,6 +1646,20 @@ function bindSession() {
       award(sks, sess.score * 5); save(); render();
     } catch (e) { ai.disabled = false; $("#aiOut").innerHTML = `<p class="small" style="color:var(--bad)">${esc(e.message || "Couldn't reach the grader. Check your connection.")}</p>`; }
   };
+  const tb = $("#testBtn"); if (tb) tb.onclick = () => {
+    const GA = GRADE_APPS[S.settings.gradeApp] || GRADE_APPS.claude, p = testPrompt(TEST(sess.item.id));
+    tb.href = GA.url(p);
+    copyText(p).then(ok => toast(ok ? (GA.paste ? "Test copied. Paste it into " + GA.name + "." : "Test also copied, in case it isn't filled in.") : "Opening " + GA.name + "…"));
+    sess.testOpened = true; save(); $("#testResult").hidden = false;
+  };
+  const tp = $("#testPaste"); if (tp) tp.oninput = () => {
+    sess.testPaste = tp.value; sess.testParsed = parseVerdict(tp.value, TEST(sess.item.id)); save();
+    $("#testParsed").innerHTML = testParsedHtml(sess.testParsed, TEST(sess.item.id)); bindTestSave();
+  };
+  const testDone = r => { sess.testRes = r; award(sks, r.pass ? 100 : 20); advance(); };
+  const bindTestSave = () => { const b = $("[data-testsave]"); if (b) b.onclick = () => testDone(sess.testParsed); };
+  bindTestSave();
+  $$("[data-testres]").forEach(b => b.onclick = () => testDone({ pass: b.dataset.testres === "pass", avg: 0, rounds: [], revisit: [] }));
   const lb = $("#liveBtn"); if (lb) lb.onclick = e => {
     const GA = GRADE_APPS[S.settings.gradeApp] || GRADE_APPS.claude, p = roleplayPrompt(sess.item);
     lb.href = GA.url(p);
@@ -1549,6 +1701,7 @@ function bindSession() {
 /* ============ Removing a play (e.g. an accidental score) ============ */
 const playKey = h => h.u || [h.d, h.type, h.id, h.xp, h.score, h.kind, h.at || ""].join("|");
 function rebuildMem(id) {
+  if (isTest(id)) return;
   const keep = S.mem[id] ? { vi: S.mem[id].vi, vp: S.mem[id].vp } : {};
   delete S.mem[id];
   for (const h of S.history.filter(x => x.id === id && x.score > 0).sort((a, b) => (a.at || 0) - (b.at || 0))) applyGrade(id, h.score);
